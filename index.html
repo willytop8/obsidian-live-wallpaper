@@ -16,13 +16,92 @@ const DEFAULTS = {
   refreshMs: 5000,
   tagColors: {},
   linkOpacity: 0.18,
-  nodeGlow: true
+  nodeGlow: true,
+  particles: true,
+  particleSpeed: 1,
+  particleDensity: 0.3,
+  clusterByTag: true,
+  backgroundGradient: true,
+  hubLabels: false,
+  hubLabelCount: 5,
+  edgeColoring: true,
+  depthOfField: true,
+  noteFlare: true
 };
 let cfg = {...DEFAULTS};
 let sim, nodes=[], links=[], lastHash='';
 let maxDeg = 1;
 let tick = 0;
+let prevNodeIds = new Set();
 
+// --- Particle system ---
+let particlePool = [];
+const MAX_PARTICLES = 600;
+
+function spawnParticles() {
+  if (!cfg.particles || links.length === 0) return;
+  const count = Math.max(1, Math.floor(links.length * cfg.particleDensity * 0.05));
+  for (let i = 0; i < count && particlePool.length < MAX_PARTICLES; i++) {
+    const l = links[Math.floor(Math.random() * links.length)];
+    if (!l.source?.x) continue;
+    particlePool.push({
+      link: l,
+      t: 0,
+      speed: (0.003 + Math.random() * 0.004) * cfg.particleSpeed,
+      alpha: 0.3 + Math.random() * 0.4
+    });
+  }
+}
+
+function updateParticles() {
+  for (let i = particlePool.length - 1; i >= 0; i--) {
+    particlePool[i].t += particlePool[i].speed;
+    if (particlePool[i].t >= 1) particlePool.splice(i, 1);
+  }
+}
+
+function drawParticles() {
+  if (!cfg.particles) return;
+  particlePool.forEach(p => {
+    const l = p.link;
+    if (!l.source?.x) return;
+    const x = l.source.x + (l.target.x - l.source.x) * p.t;
+    const y = l.source.y + (l.target.y - l.source.y) * p.t;
+    const c = cfg.edgeColoring ? edgeColor(l) : cfg.accent;
+    const [r,g,b] = hexToRGB(c);
+    // Fade in and out
+    const fade = p.t < 0.1 ? p.t / 0.1 : p.t > 0.9 ? (1 - p.t) / 0.1 : 1;
+    ctx.beginPath();
+    ctx.arc(x, y, 1.2, 0, Math.PI * 2);
+    ctx.fillStyle = rgba(r, g, b, p.alpha * fade);
+    ctx.fill();
+  });
+}
+
+// --- Flare system ---
+let flares = new Map(); // nodeId -> { start: tick, duration: 60 }
+
+function detectNewNodes(newIds) {
+  if (prevNodeIds.size === 0) { prevNodeIds = newIds; return; }
+  for (const id of newIds) {
+    if (!prevNodeIds.has(id)) {
+      flares.set(id, { start: tick, duration: 90 });
+    }
+  }
+  prevNodeIds = newIds;
+}
+
+function getFlareIntensity(nodeId) {
+  if (!cfg.noteFlare || !flares.has(nodeId)) return 0;
+  const f = flares.get(nodeId);
+  const age = tick - f.start;
+  if (age > f.duration) { flares.delete(nodeId); return 0; }
+  // Quick flash up, slow fade
+  const t = age / f.duration;
+  return t < 0.15 ? t / 0.15 : 1 - ((t - 0.15) / 0.85);
+}
+
+// --- Helpers ---
 function applyBackground(){ document.body.style.background = cfg.background; }
 
 function resize(){
@@ -37,6 +116,22 @@ function rgba(r,g,b,a){return `rgba(${r},${g},${b},${a})`;}
 function hex2rgba(h,a){const [r,g,b]=hexToRGB(h);return rgba(r,g,b,a);}
 
 function nodeColor(n){ return (n.tag && cfg.tagColors[n.tag]) || cfg.accent; }
+function edgeColor(l){
+  if (cfg.edgeColoring) {
+    const sc = l.source.tag && cfg.tagColors[l.source.tag];
+    const tc = l.target.tag && cfg.tagColors[l.target.tag];
+    if (sc) return sc;
+    if (tc) return tc;
+  }
+  return cfg.accent;
+}
+
+function distFromCenter(n) {
+  const dx = n.x - innerWidth / 2;
+  const dy = n.y - innerHeight / 2;
+  const maxDist = Math.sqrt(innerWidth * innerWidth + innerHeight * innerHeight) / 2;
+  return Math.sqrt(dx * dx + dy * dy) / maxDist;
+}
 
 async function loadFile(name){
   try {
@@ -66,12 +161,42 @@ async function loadCfg(){
   applyBackground();
 }
 
+// --- Tag cluster force ---
+function forceCluster(alpha) {
+  if (!cfg.clusterByTag) return;
+  // Compute tag centroids
+  const centroids = {};
+  const counts = {};
+  nodes.forEach(n => {
+    if (!n.tag) return;
+    if (!centroids[n.tag]) { centroids[n.tag] = { x: 0, y: 0 }; counts[n.tag] = 0; }
+    centroids[n.tag].x += n.x;
+    centroids[n.tag].y += n.y;
+    counts[n.tag]++;
+  });
+  for (const tag in centroids) {
+    centroids[tag].x /= counts[tag];
+    centroids[tag].y /= counts[tag];
+  }
+  // Pull nodes toward their tag centroid
+  const strength = 0.03 * alpha;
+  nodes.forEach(n => {
+    if (!n.tag || !centroids[n.tag]) return;
+    n.vx += (centroids[n.tag].x - n.x) * strength;
+    n.vy += (centroids[n.tag].y - n.y) * strength;
+  });
+}
+
 async function load(){
   try {
     const d = await loadFile('graph.json');
     if (!d?.nodes || !d?.links) return;
     const h = JSON.stringify(d.nodes.map(n=>n.id+'|'+(n.tag||'')).sort());
     if (h===lastHash) return; lastHash=h;
+
+    const newIds = new Set(d.nodes.map(n => n.id));
+    detectNewNodes(newIds);
+
     const map = new Map(nodes.map(n=>[n.id,n]));
     const spread = Math.min(innerWidth, innerHeight) * 0.4;
     nodes = d.nodes.map(n=>{
@@ -85,7 +210,6 @@ async function load(){
       const d = deg[n.id]||0;
       n.deg = d;
       n.r = 2 + Math.sqrt(d) * 1.5;
-      // Importance: 0..1 based on degree
       n.importance = Math.min(1, d / maxDeg);
     });
     if (sim) sim.stop();
@@ -97,15 +221,19 @@ async function load(){
       .force('charge', d3.forceManyBody().strength(charge))
       .force('center', d3.forceCenter(innerWidth/2, innerHeight/2))
       .force('collide', d3.forceCollide().radius(d=>d.r+2))
-      .alphaDecay(0.02).velocityDecay(0.6).on('tick', draw);
+      .alphaDecay(0.02).velocityDecay(0.6).on('tick', () => {
+        forceCluster(sim.alpha());
+        draw();
+      });
   } catch(e){ console.warn('load failed:', e.message); }
 }
 
-// Ambient breathing — keeps it alive after simulation cools
+// Ambient breathing
 function breathe(){
   tick++;
+  spawnParticles();
+  updateParticles();
   if (sim && sim.alpha() < 0.01) {
-    // Gentle nudge to keep nodes drifting
     nodes.forEach(n => {
       const phase = tick * 0.003 + n.x * 0.001 + n.y * 0.001;
       n.vx += Math.sin(phase) * 0.02;
@@ -117,64 +245,144 @@ function breathe(){
   requestAnimationFrame(breathe);
 }
 
+function drawBackgroundGradient() {
+  if (!cfg.backgroundGradient) return;
+  const [br, bg, bb] = hexToRGB(cfg.background);
+  const [ar, ag, ab] = hexToRGB(cfg.accent);
+  const cx = innerWidth / 2, cy = innerHeight / 2;
+  const radius = Math.max(innerWidth, innerHeight) * 0.7;
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+  // Subtle accent tint at center, fading to background
+  g.addColorStop(0, rgba(
+    Math.floor(br * 0.85 + ar * 0.15),
+    Math.floor(bg * 0.85 + ag * 0.15),
+    Math.floor(bb * 0.85 + ab * 0.15),
+    1
+  ));
+  g.addColorStop(0.5, rgba(br, bg, bb, 1));
+  g.addColorStop(1, rgba(
+    Math.max(0, br - 5),
+    Math.max(0, bg - 5),
+    Math.max(0, bb - 5),
+    1
+  ));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, innerWidth, innerHeight);
+}
+
 function draw(){
   ctx.clearRect(0,0,innerWidth,innerHeight);
+
+  // === Background gradient ===
+  drawBackgroundGradient();
 
   // === Edges ===
   links.forEach(l=>{
     const sx=l.source.x, sy=l.source.y, tx=l.target.x, ty=l.target.y;
-    // Edge opacity scales with endpoint importance
     const imp = Math.max(l.source.importance||0, l.target.importance||0);
     const alpha = cfg.linkOpacity * (0.3 + imp * 0.7);
-    ctx.strokeStyle = hex2rgba(cfg.accent, alpha);
-    ctx.lineWidth = 0.4 + imp * 0.6;
+    const c = edgeColor(l);
+
+    // Depth of field on edges
+    let dofMult = 1;
+    if (cfg.depthOfField) {
+      const avgDist = (distFromCenter(l.source) + distFromCenter(l.target)) / 2;
+      dofMult = 1 - avgDist * 0.5;
+    }
+
+    ctx.strokeStyle = hex2rgba(c, alpha * dofMult);
+    ctx.lineWidth = (0.4 + imp * 0.6) * dofMult;
     ctx.beginPath();
     ctx.moveTo(sx, sy);
     ctx.lineTo(tx, ty);
     ctx.stroke();
   });
 
+  // === Particles ===
+  drawParticles();
+
   // === Nodes ===
-  nodes.forEach(n=>{
+  // Sort: draw low-importance first, hubs on top
+  const sorted = [...nodes].sort((a, b) => (a.importance || 0) - (b.importance || 0));
+
+  sorted.forEach(n=>{
     const c = nodeColor(n);
     const [cr,cg,cb] = hexToRGB(c);
     const imp = n.importance || 0;
     const breathPhase = Math.sin(tick * 0.015 + n.x * 0.005) * 0.5 + 0.5;
 
+    // Depth of field
+    let dofScale = 1, dofAlpha = 1;
+    if (cfg.depthOfField) {
+      const d = distFromCenter(n);
+      dofScale = 1 - d * 0.3;
+      dofAlpha = 1 - d * 0.4;
+    }
+
+    // Flare
+    const flare = getFlareIntensity(n.id);
+    const r = n.r * dofScale;
+
     if (cfg.nodeGlow) {
-      // Outer glow — larger for important nodes, pulses gently
-      const glowR = n.r + 4 + imp * 12 + breathPhase * 2;
-      const glowAlpha = 0.08 + imp * 0.15 + breathPhase * 0.03;
-      const g = ctx.createRadialGradient(n.x, n.y, n.r * 0.5, n.x, n.y, glowR);
-      g.addColorStop(0, rgba(cr, cg, cb, glowAlpha));
-      g.addColorStop(1, rgba(cr, cg, cb, 0));
+      const glowR = r + 4 + imp * 12 + breathPhase * 2 + flare * 20;
+      const glowAlpha = (0.08 + imp * 0.15 + breathPhase * 0.03 + flare * 0.4) * dofAlpha;
+      const g = ctx.createRadialGradient(n.x, n.y, r * 0.5, n.x, n.y, glowR);
+      const glowCr = flare > 0 ? Math.min(255, cr + Math.floor(flare * 150)) : cr;
+      const glowCg = flare > 0 ? Math.min(255, cg + Math.floor(flare * 150)) : cg;
+      const glowCb = flare > 0 ? Math.min(255, cb + Math.floor(flare * 150)) : cb;
+      g.addColorStop(0, rgba(glowCr, glowCg, glowCb, glowAlpha));
+      g.addColorStop(1, rgba(glowCr, glowCg, glowCb, 0));
       ctx.beginPath();
       ctx.arc(n.x, n.y, glowR, 0, Math.PI * 2);
       ctx.fillStyle = g;
       ctx.fill();
     }
 
-    // Core node — brighter center, opacity based on importance
-    const coreAlpha = 0.55 + imp * 0.35 + breathPhase * 0.1;
+    // Core
+    const coreAlpha = (0.55 + imp * 0.35 + breathPhase * 0.1 + flare * 0.4) * dofAlpha;
     ctx.beginPath();
-    ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
-    ctx.fillStyle = rgba(cr, cg, cb, coreAlpha);
+    ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = rgba(
+      Math.min(255, cr + Math.floor(flare * 200)),
+      Math.min(255, cg + Math.floor(flare * 200)),
+      Math.min(255, cb + Math.floor(flare * 200)),
+      Math.min(1, coreAlpha)
+    );
     ctx.fill();
 
     // Hot center dot for hub nodes
-    if (imp > 0.3) {
-      const dotR = n.r * 0.4;
+    if (imp > 0.3 || flare > 0) {
+      const dotR = r * 0.4;
       ctx.beginPath();
       ctx.arc(n.x, n.y, dotR, 0, Math.PI * 2);
       ctx.fillStyle = rgba(
-        Math.min(255, cr + 80),
-        Math.min(255, cg + 80),
-        Math.min(255, cb + 80),
-        0.7 + breathPhase * 0.3
+        Math.min(255, cr + 80 + Math.floor(flare * 175)),
+        Math.min(255, cg + 80 + Math.floor(flare * 175)),
+        Math.min(255, cb + 80 + Math.floor(flare * 175)),
+        Math.min(1, (0.7 + breathPhase * 0.3) * dofAlpha)
       );
       ctx.fill();
     }
   });
+
+  // === Hub labels ===
+  if (cfg.hubLabels && cfg.hubLabelCount > 0) {
+    const hubs = [...nodes]
+      .sort((a, b) => (b.deg || 0) - (a.deg || 0))
+      .slice(0, cfg.hubLabelCount);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    hubs.forEach(n => {
+      const c = nodeColor(n);
+      const [cr,cg,cb] = hexToRGB(c);
+      let dofAlpha = 1;
+      if (cfg.depthOfField) dofAlpha = 1 - distFromCenter(n) * 0.4;
+      const fontSize = Math.max(9, 10 + (n.importance || 0) * 4);
+      ctx.font = `${fontSize}px -apple-system, BlinkMacSystemFont, 'Inter', sans-serif`;
+      ctx.fillStyle = rgba(cr, cg, cb, 0.6 * dofAlpha);
+      ctx.fillText(n.id, n.x, n.y + n.r + 6);
+    });
+  }
 }
 
 applyBackground();

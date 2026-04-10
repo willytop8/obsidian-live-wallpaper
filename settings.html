@@ -10,7 +10,7 @@
     --text: #e0e0e8; --dim: #8888a0; --accent: #7c5cff;
     --radius: 8px;
   }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); padding: 24px; max-width: 640px; margin: 0 auto; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); padding: 24px; max-width: 640px; margin: 0 auto; padding-bottom: 60px; }
   h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
   .subtitle { color: var(--dim); font-size: 13px; margin-bottom: 32px; }
 
@@ -29,7 +29,7 @@
   input[type="number"] { width: 80px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); padding: 4px 8px; font-size: 14px; text-align: right; }
   input[type="number"]:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
 
-  .toggle { position: relative; width: 42px; height: 24px; }
+  .toggle { position: relative; width: 42px; height: 24px; flex-shrink: 0; }
   .toggle input { opacity: 0; width: 0; height: 0; }
   .toggle .slider { position: absolute; inset: 0; background: var(--border); border-radius: 12px; cursor: pointer; transition: background 0.2s; }
   .toggle .slider::before { content: ''; position: absolute; left: 3px; top: 3px; width: 18px; height: 18px; background: var(--text); border-radius: 50%; transition: transform 0.2s; }
@@ -39,13 +39,11 @@
   .val { font-size: 13px; color: var(--dim); min-width: 32px; text-align: right; margin-left: 8px; }
   .controls { display: flex; align-items: center; gap: 8px; }
 
-  /* Presets */
   .presets { display: flex; gap: 8px; flex-wrap: wrap; }
   .preset { padding: 8px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; font-size: 13px; color: var(--text); transition: border-color 0.15s; }
   .preset:hover { border-color: var(--accent); }
   .preset .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
 
-  /* Tag colors */
   .tag-list { display: flex; flex-direction: column; gap: 0; }
   .tag-row { display: flex; align-items: center; padding: 10px 16px; background: var(--surface); border: 1px solid var(--border); margin-bottom: -1px; gap: 12px; }
   .tag-row:first-child { border-radius: var(--radius) var(--radius) 0 0; }
@@ -57,7 +55,6 @@
   .tag-remove:hover { color: #ff6b6b; }
   .tag-empty { padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); color: var(--dim); font-size: 13px; text-align: center; }
 
-  /* Status */
   .status { position: fixed; bottom: 16px; right: 16px; font-size: 12px; color: var(--dim); opacity: 0; transition: opacity 0.3s; }
   .status.show { opacity: 1; }
   .status.ok { color: #50c878; }
@@ -87,7 +84,15 @@
 </div>
 
 <div class="section">
-  <div class="section-title">Appearance</div>
+  <div class="section-title">Nodes</div>
+  <div class="row">
+    <div><label>Node glow</label><div class="hint">Radial halo around each node</div></div>
+    <label class="toggle"><input type="checkbox" id="nodeGlow" checked><span class="slider"></span></label>
+  </div>
+  <div class="row">
+    <div><label>Edge coloring</label><div class="hint">Edges inherit their source node's tag color</div></div>
+    <label class="toggle"><input type="checkbox" id="edgeColoring" checked><span class="slider"></span></label>
+  </div>
   <div class="row">
     <div><label>Link opacity</label></div>
     <div class="controls">
@@ -96,9 +101,61 @@
     </div>
   </div>
   <div class="row">
-    <div><label>Node glow</label><div class="hint">Radial halo around each node</div></div>
-    <label class="toggle"><input type="checkbox" id="nodeGlow" checked><span class="slider"></span></label>
+    <div><label>Cluster by tag</label><div class="hint">Same-tag nodes gravitate together</div></div>
+    <label class="toggle"><input type="checkbox" id="clusterByTag" checked><span class="slider"></span></label>
   </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Effects</div>
+  <div class="row">
+    <div><label>Particles</label><div class="hint">Dots flowing along edges</div></div>
+    <label class="toggle"><input type="checkbox" id="particles" checked><span class="slider"></span></label>
+  </div>
+  <div class="row">
+    <div><label>Particle speed</label></div>
+    <div class="controls">
+      <input type="range" id="particleSpeed" min="10" max="300" value="100">
+      <span class="val" id="particleSpeedVal">1.0</span>
+    </div>
+  </div>
+  <div class="row">
+    <div><label>Particle density</label></div>
+    <div class="controls">
+      <input type="range" id="particleDensity" min="5" max="100" value="30">
+      <span class="val" id="particleDensityVal">0.30</span>
+    </div>
+  </div>
+  <div class="row">
+    <div><label>Background gradient</label><div class="hint">Subtle radial vignette with accent tint</div></div>
+    <label class="toggle"><input type="checkbox" id="backgroundGradient" checked><span class="slider"></span></label>
+  </div>
+  <div class="row">
+    <div><label>Depth of field</label><div class="hint">Peripheral nodes dimmer and smaller</div></div>
+    <label class="toggle"><input type="checkbox" id="depthOfField" checked><span class="slider"></span></label>
+  </div>
+  <div class="row">
+    <div><label>New note flare</label><div class="hint">Flash when a new note appears</div></div>
+    <label class="toggle"><input type="checkbox" id="noteFlare" checked><span class="slider"></span></label>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Labels</div>
+  <div class="row">
+    <div><label>Hub labels</label><div class="hint">Show names on top connected notes</div></div>
+    <label class="toggle"><input type="checkbox" id="hubLabels"><span class="slider"></span></label>
+  </div>
+  <div class="row">
+    <div><label>Label count</label><div class="hint">How many hub names to show</div></div>
+    <div class="controls">
+      <input type="number" id="hubLabelCount" min="1" max="50" value="5">
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Performance</div>
   <div class="row">
     <div><label>Refresh interval</label><div class="hint">How often the wallpaper checks for vault changes</div></div>
     <div class="controls">
@@ -143,11 +200,28 @@ async function loadConfig() {
   try {
     const r = await fetch(API + '/api/config');
     cfg = await r.json();
+    // Colors
     document.getElementById('accent').value = cfg.accent || '#7c5cff';
     document.getElementById('background').value = cfg.background || '#0a0a0f';
+    // Nodes
+    document.getElementById('nodeGlow').checked = cfg.nodeGlow !== false;
+    document.getElementById('edgeColoring').checked = cfg.edgeColoring !== false;
     document.getElementById('linkOpacity').value = Math.round((cfg.linkOpacity || 0.18) * 100);
     document.getElementById('linkOpacityVal').textContent = (cfg.linkOpacity || 0.18).toFixed(2);
-    document.getElementById('nodeGlow').checked = cfg.nodeGlow !== false;
+    document.getElementById('clusterByTag').checked = cfg.clusterByTag !== false;
+    // Effects
+    document.getElementById('particles').checked = cfg.particles !== false;
+    document.getElementById('particleSpeed').value = Math.round((cfg.particleSpeed || 1) * 100);
+    document.getElementById('particleSpeedVal').textContent = (cfg.particleSpeed || 1).toFixed(1);
+    document.getElementById('particleDensity').value = Math.round((cfg.particleDensity || 0.3) * 100);
+    document.getElementById('particleDensityVal').textContent = (cfg.particleDensity || 0.3).toFixed(2);
+    document.getElementById('backgroundGradient').checked = cfg.backgroundGradient !== false;
+    document.getElementById('depthOfField').checked = cfg.depthOfField !== false;
+    document.getElementById('noteFlare').checked = cfg.noteFlare !== false;
+    // Labels
+    document.getElementById('hubLabels').checked = cfg.hubLabels === true;
+    document.getElementById('hubLabelCount').value = cfg.hubLabelCount || 5;
+    // Performance
     document.getElementById('refreshMs').value = cfg.refreshMs || 5000;
   } catch (e) { status('Failed to load config', 'err'); }
 }
@@ -192,7 +266,6 @@ function renderPresets() {
 function renderTags() {
   const el = document.getElementById('tagList');
   const tagColors = cfg.tagColors || {};
-  // Sort: colored tags first, then by count
   const sorted = Object.entries(allTags).sort((a, b) => {
     const ac = tagColors[a[0]] ? 1 : 0;
     const bc = tagColors[b[0]] ? 1 : 0;
@@ -201,7 +274,7 @@ function renderTags() {
   });
 
   if (sorted.length === 0) {
-    el.innerHTML = '<div class="tag-empty">No tags found in vault. Add tags to your notes\' frontmatter to color them.</div>';
+    el.innerHTML = '<div class="tag-empty">No tags found in vault.</div>';
     return;
   }
 
@@ -235,12 +308,34 @@ function renderTags() {
 // Bind controls
 document.getElementById('accent').addEventListener('change', e => save({ accent: e.target.value }));
 document.getElementById('background').addEventListener('change', e => save({ background: e.target.value }));
+
+// Toggles
+['nodeGlow','edgeColoring','clusterByTag','particles','backgroundGradient','depthOfField','noteFlare','hubLabels'].forEach(id => {
+  document.getElementById(id).addEventListener('change', e => save({ [id]: e.target.checked }));
+});
+
+// Sliders
 document.getElementById('linkOpacity').addEventListener('input', e => {
-  const v = e.target.value / 100;
-  document.getElementById('linkOpacityVal').textContent = v.toFixed(2);
+  document.getElementById('linkOpacityVal').textContent = (e.target.value / 100).toFixed(2);
 });
 document.getElementById('linkOpacity').addEventListener('change', e => save({ linkOpacity: e.target.value / 100 }));
-document.getElementById('nodeGlow').addEventListener('change', e => save({ nodeGlow: e.target.checked }));
+
+document.getElementById('particleSpeed').addEventListener('input', e => {
+  document.getElementById('particleSpeedVal').textContent = (e.target.value / 100).toFixed(1);
+});
+document.getElementById('particleSpeed').addEventListener('change', e => save({ particleSpeed: e.target.value / 100 }));
+
+document.getElementById('particleDensity').addEventListener('input', e => {
+  document.getElementById('particleDensityVal').textContent = (e.target.value / 100).toFixed(2);
+});
+document.getElementById('particleDensity').addEventListener('change', e => save({ particleDensity: e.target.value / 100 }));
+
+// Numbers
+document.getElementById('hubLabelCount').addEventListener('change', e => {
+  const v = Math.max(1, Math.min(50, parseInt(e.target.value) || 5));
+  e.target.value = v;
+  save({ hubLabelCount: v });
+});
 document.getElementById('refreshMs').addEventListener('change', e => {
   const v = Math.max(1000, Math.min(60000, parseInt(e.target.value) || 5000));
   e.target.value = v;
