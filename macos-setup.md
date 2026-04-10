@@ -3,7 +3,7 @@
 ## Plash configuration
 
 1. Install [Plash](https://apps.apple.com/us/app/plash/id1494023538) from the Mac App Store.
-2. Plash menu bar → **Add Website** → paste `file:///absolute/path/to/obsidian-live-wallpaper/index.html`.
+2. Plash menu bar → **Add Website** → paste `http://localhost:3000`.
 3. **Browsing Mode**: off (so clicks pass through to your desktop).
 4. **Opacity**: 100%. **Invert colors**: off.
 5. **Reload interval**: leave blank — the renderer polls on its own.
