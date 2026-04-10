@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html><head><meta charset="utf-8"><style>
-  html,body{margin:0;height:100%;background:#0a0a0f;overflow:hidden;}
+  html,body{margin:0;height:100%;overflow:hidden;}
   canvas{display:block;}
 </style></head><body>
 <canvas id="c"></canvas>
@@ -9,20 +9,39 @@
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 const DPR = window.devicePixelRatio || 1;
-function resize(){canvas.width=innerWidth*DPR;canvas.height=innerHeight*DPR;canvas.style.width=innerWidth+'px';canvas.style.height=innerHeight+'px';ctx.setTransform(1,0,0,1,0,0);ctx.scale(DPR,DPR);}
-resize(); addEventListener('resize',resize);
 
-let cfg = { accent:'#7c5cff', refreshMs:5000 };
+const DEFAULTS = {
+  accent: '#7c5cff',
+  background: '#0a0a0f',
+  refreshMs: 5000,
+  tagColors: {},
+  linkOpacity: 0.18,
+  nodeGlow: true
+};
+let cfg = {...DEFAULTS};
 let sim, nodes=[], links=[], lastHash='';
 
+function applyBackground(){ document.body.style.background = cfg.background; }
+
+function resize(){
+  canvas.width=innerWidth*DPR; canvas.height=innerHeight*DPR;
+  canvas.style.width=innerWidth+'px'; canvas.style.height=innerHeight+'px';
+  ctx.setTransform(1,0,0,1,0,0); ctx.scale(DPR,DPR);
+}
+resize(); addEventListener('resize',resize);
+
 function hex2rgba(h,a){const n=parseInt(h.slice(1),16);return `rgba(${n>>16&255},${n>>8&255},${n&255},${a})`;}
+
+function nodeColor(n){ return (n.tag && cfg.tagColors[n.tag]) || cfg.accent; }
 
 async function loadCfg(){
   try {
     const r = await fetch('config.json?'+Date.now());
-    cfg = {...cfg, ...await r.json()};
+    cfg = {...DEFAULTS, ...await r.json()};
+    applyBackground();
   } catch(e){ console.warn('config.json not found or invalid, using defaults'); }
 }
+
 async function load(){
   try {
     const r = await fetch('graph.json?'+Date.now());
@@ -32,7 +51,10 @@ async function load(){
     const h = JSON.stringify(d.nodes.map(n=>n.id).sort());
     if (h===lastHash) return; lastHash=h;
     const map = new Map(nodes.map(n=>[n.id,n]));
-    nodes = d.nodes.map(n=>map.get(n.id)||{...n,x:innerWidth/2+(Math.random()-.5)*100,y:innerHeight/2+(Math.random()-.5)*100});
+    nodes = d.nodes.map(n=>{
+      const prev = map.get(n.id);
+      return prev ? Object.assign(prev, {tag:n.tag}) : {...n, x:innerWidth/2+(Math.random()-.5)*100, y:innerHeight/2+(Math.random()-.5)*100};
+    });
     links = d.links;
     const deg={}; links.forEach(l=>{deg[l.source]=(deg[l.source]||0)+1;deg[l.target]=(deg[l.target]||0)+1;});
     nodes.forEach(n=>n.r=2+Math.sqrt(deg[n.id]||0)*1.2);
@@ -45,17 +67,28 @@ async function load(){
       .alphaDecay(0.015).velocityDecay(0.5).on('tick', draw);
   } catch(e){ console.warn('load failed:', e.message); }
 }
+
 function draw(){
   ctx.clearRect(0,0,innerWidth,innerHeight);
-  ctx.strokeStyle=hex2rgba(cfg.accent,0.18); ctx.lineWidth=0.6; ctx.beginPath();
-  links.forEach(l=>{ctx.moveTo(l.source.x,l.source.y);ctx.lineTo(l.target.x,l.target.y);});
+  // edges
+  ctx.lineWidth=0.6; ctx.beginPath();
+  links.forEach(l=>{
+    ctx.strokeStyle=hex2rgba(cfg.accent, cfg.linkOpacity);
+    ctx.moveTo(l.source.x,l.source.y); ctx.lineTo(l.target.x,l.target.y);
+  });
   ctx.stroke();
+  // nodes
   nodes.forEach(n=>{
-    const g=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,n.r+3);
-    g.addColorStop(0,hex2rgba(cfg.accent,0.5)); g.addColorStop(1,hex2rgba(cfg.accent,0));
-    ctx.beginPath(); ctx.arc(n.x,n.y,n.r+3,0,Math.PI*2); ctx.fillStyle=g; ctx.fill();
-    ctx.beginPath(); ctx.arc(n.x,n.y,n.r,0,Math.PI*2); ctx.fillStyle=cfg.accent; ctx.fill();
+    const c = nodeColor(n);
+    if (cfg.nodeGlow) {
+      const g=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,n.r+3);
+      g.addColorStop(0,hex2rgba(c,0.5)); g.addColorStop(1,hex2rgba(c,0));
+      ctx.beginPath(); ctx.arc(n.x,n.y,n.r+3,0,Math.PI*2); ctx.fillStyle=g; ctx.fill();
+    }
+    ctx.beginPath(); ctx.arc(n.x,n.y,n.r,0,Math.PI*2); ctx.fillStyle=c; ctx.fill();
   });
 }
+
+applyBackground();
 (async()=>{ await loadCfg(); await load(); setInterval(load, cfg.refreshMs); })();
 </script></body></html>

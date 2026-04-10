@@ -6,7 +6,7 @@
 
 A tiny tool that turns your Obsidian vault's graph view into a live, animated desktop wallpaper. New notes appear within seconds of saving. Zero labels, fully ambient — meant to be glanced at, not read.
 
-**macOS today. Windows and Linux on the roadmap.**
+**macOS and Windows today. Linux on the roadmap.**
 
 ## Why
 
@@ -33,6 +33,10 @@ Open Plash → **Add Website** → paste `file:///absolute/path/to/obsidian-live
 
 For autostart and troubleshooting, see [`macos-setup.md`](macos-setup.md).
 
+### Windows
+
+Follow the same clone/install steps above, then use [Lively Wallpaper](https://www.rocksdanister.com/lively/) (free) instead of Plash. Full guide: [`windows-setup.md`](windows-setup.md).
+
 ## How it works
 
 Three layers, each ignorant of the others:
@@ -58,19 +62,42 @@ The clean separation is the whole reason the Windows/Linux ports are nearly free
 {
   "vaultPath": "/Users/you/Vault",
   "accent": "#7c5cff",
-  "refreshMs": 5000
+  "background": "#0a0a0f",
+  "refreshMs": 5000,
+  "linkOpacity": 0.18,
+  "nodeGlow": true,
+  "tagColors": {
+    "project": "#00ffd5",
+    "idea": "#ff6b9d",
+    "reference": "#ffa94d"
+  }
 }
 ```
 
-Try `#00ffd5` on a black background for a hacker-terminal vibe, or `#ff6b9d` for synthwave.
+| Option | Default | Description |
+|--------|---------|-------------|
+| `vaultPath` | — | Absolute path to your Obsidian vault |
+| `accent` | `#7c5cff` | Default node and edge color |
+| `background` | `#0a0a0f` | Canvas background color |
+| `refreshMs` | `5000` | Polling interval in ms (increase for 2000+ notes) |
+| `linkOpacity` | `0.18` | Edge line opacity (0–1) |
+| `nodeGlow` | `true` | Radial glow halo around each node |
+| `tagColors` | `{}` | Map of Obsidian tag → hex color |
+
+### Tag-based coloring
+
+The parser reads the first tag from each note's frontmatter (`tags: [project, ...]`) or the first inline `#tag` in the body. If that tag has a color in `tagColors`, the node renders in that color instead of the accent.
+
+Notes with no tags use the `accent` color. Tags not listed in `tagColors` also fall back to `accent`.
 
 ## Roadmap
 
 - [x] macOS (Plash)
-- [ ] Windows (Lively Wallpaper) — code is identical, needs docs only
+- [x] Windows (Lively Wallpaper)
+- [x] Tag-based node coloring
+- [x] Visual customization (background, glow, link opacity)
 - [ ] Linux X11 (xwinwrap + Chromium)
 - [ ] Linux Wayland (headless render → swww)
-- [ ] Tag-based node coloring
 - [ ] Per-monitor configs
 
 PRs welcome, especially for the platform ports.

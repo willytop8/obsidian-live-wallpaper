@@ -1,5 +1,13 @@
 {
   "vaultPath": "/Users/you/Vault",
   "accent": "#7c5cff",
-  "refreshMs": 5000
+  "background": "#0a0a0f",
+  "refreshMs": 5000,
+  "linkOpacity": 0.18,
+  "nodeGlow": true,
+  "tagColors": {
+    "project": "#00ffd5",
+    "idea": "#ff6b9d",
+    "reference": "#ffa94d"
+  }
 }
