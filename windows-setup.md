@@ -62,7 +62,7 @@ Keep this terminal open (or run it as a background service — see below).
 npm install -g pm2
 pm2 start parser.js --name vault-wallpaper
 pm2 save
-pm2-startup install
+pm2 startup
 ```
 
 ## Troubleshooting

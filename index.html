@@ -34,21 +34,40 @@ function hex2rgba(h,a){const n=parseInt(h.slice(1),16);return `rgba(${n>>16&255}
 
 function nodeColor(n){ return (n.tag && cfg.tagColors[n.tag]) || cfg.accent; }
 
-async function loadCfg(){
+async function loadFile(name){
   try {
-    const r = await fetch('config.json?'+Date.now());
-    cfg = {...DEFAULTS, ...await r.json()};
-    applyBackground();
-  } catch(e){ console.warn('config.json not found or invalid, using defaults'); }
+    const r = await fetch(name+'?'+Date.now());
+    if (!r.ok) return null;
+    return await r.json();
+  } catch(e){
+    // file:// fallback — fetch may be blocked, try XMLHttpRequest
+    return new Promise(resolve => {
+      try {
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', name, true);
+        xhr.onload = () => { try { resolve(JSON.parse(xhr.responseText)); } catch(e) { resolve(null); } };
+        xhr.onerror = () => resolve(null);
+        xhr.send();
+      } catch(e) { resolve(null); }
+    });
+  }
+}
+
+async function loadCfg(){
+  const data = await loadFile('config.json');
+  if (data) {
+    cfg = {...DEFAULTS, ...data};
+  } else {
+    console.warn('config.json not found or invalid, using defaults');
+  }
+  applyBackground();
 }
 
 async function load(){
   try {
-    const r = await fetch('graph.json?'+Date.now());
-    if (!r.ok) return;
-    const d = await r.json();
+    const d = await loadFile('graph.json');
     if (!d?.nodes || !d?.links) return;
-    const h = JSON.stringify(d.nodes.map(n=>n.id).sort());
+    const h = JSON.stringify(d.nodes.map(n=>n.id+'|'+(n.tag||'')).sort());
     if (h===lastHash) return; lastHash=h;
     const map = new Map(nodes.map(n=>[n.id,n]));
     nodes = d.nodes.map(n=>{
@@ -70,14 +89,9 @@ async function load(){
 
 function draw(){
   ctx.clearRect(0,0,innerWidth,innerHeight);
-  // edges
-  ctx.lineWidth=0.6; ctx.beginPath();
-  links.forEach(l=>{
-    ctx.strokeStyle=hex2rgba(cfg.accent, cfg.linkOpacity);
-    ctx.moveTo(l.source.x,l.source.y); ctx.lineTo(l.target.x,l.target.y);
-  });
+  ctx.strokeStyle=hex2rgba(cfg.accent, cfg.linkOpacity); ctx.lineWidth=0.6; ctx.beginPath();
+  links.forEach(l=>{ctx.moveTo(l.source.x,l.source.y);ctx.lineTo(l.target.x,l.target.y);});
   ctx.stroke();
-  // nodes
   nodes.forEach(n=>{
     const c = nodeColor(n);
     if (cfg.nodeGlow) {

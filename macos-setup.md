@@ -33,7 +33,7 @@ Find your node path first: run `which node` in Terminal and paste the result bel
 **Common node paths:**
 - Apple Silicon (M1/M2/M3/M4): `/opt/homebrew/bin/node`
 - Intel Mac (Homebrew): `/usr/local/bin/node`
-- nvm: `~/.nvm/versions/node/v2X.X.X/bin/node` (use the full expanded path)
+- nvm: `/Users/YOU/.nvm/versions/node/vXX.X.X/bin/node` (launchctl does not expand `~` — use the full absolute path)
 
 ## Troubleshooting
 

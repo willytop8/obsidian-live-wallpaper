@@ -16,20 +16,38 @@ try {
   process.exit(1);
 }
 
+if (!cfg.vaultPath || typeof cfg.vaultPath !== 'string') {
+  console.error('config.json: vaultPath is required and must be a string');
+  process.exit(1);
+}
+if (!fs.existsSync(cfg.vaultPath)) {
+  console.error(`config.json: vaultPath does not exist: ${cfg.vaultPath}`);
+  process.exit(1);
+}
+
 const VAULT = cfg.vaultPath;
 const OUT = path.join(__dirname, 'graph.json');
 const WIKILINK = /\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g;
 const FRONTMATTER = /^---\n([\s\S]*?)\n---/;
-const TAGS_FIELD = /^tags:\s*\[([^\]]*)\]/m;
+const TAGS_FLOW = /^tags:\s*\[([^\]]*)\]/m;
+const TAGS_BLOCK = /^tags:\s*\n((?:\s*-\s+.+\n?)+)/m;
 const TAGS_INLINE = /(?:^|\s)#([a-zA-Z][\w-/]*)/g;
 
 function extractTag(content) {
   const fm = content.match(FRONTMATTER);
   if (fm) {
-    const tagMatch = fm[1].match(TAGS_FIELD);
-    if (tagMatch) {
-      const first = tagMatch[1].split(',')[0].trim().replace(/['"]/g, '');
+    const flow = fm[1].match(TAGS_FLOW);
+    if (flow) {
+      const first = flow[1].split(',')[0].trim().replace(/['"]/g, '');
       if (first) return first;
+    }
+    const block = fm[1].match(TAGS_BLOCK);
+    if (block) {
+      const firstLine = block[1].match(/^\s*-\s+(.+)/);
+      if (firstLine) {
+        const first = firstLine[1].trim().replace(/['"]/g, '');
+        if (first) return first;
+      }
     }
   }
   TAGS_INLINE.lastIndex = 0;
@@ -70,12 +88,17 @@ function build() {
   });
   const set = new Set(nodes.map(n => n.id));
   const links = [];
+  const linkSet = new Set();
   for (const [src, content] of Object.entries(files)) {
     WIKILINK.lastIndex = 0;
     let m;
     while ((m = WIKILINK.exec(content)) !== null) {
       const tgt = m[1].trim();
-      if (set.has(tgt) && tgt !== src) links.push({ source: src, target: tgt });
+      const key = src + '\0' + tgt;
+      if (set.has(tgt) && tgt !== src && !linkSet.has(key)) {
+        linkSet.add(key);
+        links.push({ source: src, target: tgt });
+      }
     }
   }
 
