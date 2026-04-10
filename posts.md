@@ -13,7 +13,7 @@ MIT licensed, ~150 lines total. Would love feedback and PRs, especially from any
 
 https://github.com/willytop8/obsidian-live-wallpaper
 
-[GIF]
+![demo](docs/demo.gif)
 
 ---
 
@@ -42,4 +42,4 @@ Only the host is OS-specific. Everything else is free. macOS shipped today; Wind
 
 Narrow contracts between layers is one of those ideas that sounds obvious until you watch it save you 80% of the work on the second platform. Worth remembering on bigger projects too.
 
-https://github.com/willytop8/obsidian-live-wallpaper · [GIF]
+https://github.com/willytop8/obsidian-live-wallpaper · ![demo](docs/demo.gif)
