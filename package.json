@@ -1,0 +1,11 @@
+{
+  "name": "obsidian-live-wallpaper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Your Obsidian vault graph as a live desktop wallpaper",
+  "main": "parser.js",
+  "scripts": { "start": "node parser.js" },
+  "engines": { "node": ">=14" },
+  "license": "MIT",
+  "dependencies": { "chokidar": "^3.6.0" }
+}
