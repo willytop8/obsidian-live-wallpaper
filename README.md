@@ -4,17 +4,20 @@
 
 ![demo](docs/demo.gif)
 
-A tiny tool that turns your Obsidian vault's graph view into a live, animated desktop wallpaper. New notes appear within seconds of saving. Zero labels, fully ambient — meant to be glanced at, not read.
+A tiny tool that turns your Obsidian vault's graph view into a live, animated desktop wallpaper. New notes appear within seconds of saving. Tag-based coloring, particle effects, hub glow, and 8 built-in themes — all configurable from a browser settings page.
 
-**macOS and Windows today. Linux on the roadmap.**
+**macOS and Windows.**
 
 ## Why
 
 The Obsidian graph view is beautiful and almost nobody looks at it, because it's buried two clicks deep inside the app. This project moves it to the one screen you actually stare at all day.
 
-## Install (macOS, ~5 minutes)
+## Install
 
-You'll need [Node.js](https://nodejs.org) (v14+) and the free [Plash](https://apps.apple.com/us/app/plash/id1494023538) app from the Mac App Store.
+You'll need [Node.js](https://nodejs.org) (v14+) and a wallpaper host app:
+
+- **macOS**: [Plash](https://apps.apple.com/us/app/plash/id1494023538) (free, Mac App Store)
+- **Windows**: [Lively Wallpaper](https://www.rocksdanister.com/lively/) (free, open source)
 
 ```bash
 git clone https://github.com/willytop8/obsidian-live-wallpaper.git
@@ -29,52 +32,37 @@ Edit `config.json` and set `vaultPath` to your Obsidian vault. Then:
 npm start
 ```
 
-Open Plash → **Add Website** → paste `http://localhost:3000`. Done.
+Point your wallpaper host to `http://localhost:3000`:
 
-Open `http://localhost:3000/settings.html` in your browser to customize colors, themes, tag colors, and more.
+- **Plash**: menu bar → **Add Website** → paste `http://localhost:3000`
+- **Lively**: click **+** → **Open URL** → paste `http://localhost:3000`
 
-For autostart and troubleshooting, see [`macos-setup.md`](macos-setup.md).
+Open `http://localhost:3000/settings.html` to customize everything.
 
-### Windows
-
-Follow the same clone/install steps above, then use [Lively Wallpaper](https://www.rocksdanister.com/lively/) (free) instead of Plash. Full guide: [`windows-setup.md`](windows-setup.md).
+For autostart and troubleshooting, see the platform-specific guides:
+- [`macos-setup.md`](macos-setup.md)
+- [`windows-setup.md`](windows-setup.md)
 
 ## How it works
 
 Three layers, each ignorant of the others:
 
 ```
-┌──────────┐    graph.json    ┌──────────┐    file://     ┌───────┐
-│  parser  │ ───────────────▶ │ renderer │ ─────────────▶ │ Plash │
-│ (Node)   │                  │  (d3)    │                │ (Mac) │
-└──────────┘                  └──────────┘                └───────┘
+┌──────────┐    graph.json    ┌──────────┐  localhost:3000  ┌────────────┐
+│  parser  │ ───────────────▶ │ renderer │ ───────────────▶ │ Plash /    │
+│ (Node)   │                  │  (d3)    │                  │ Lively     │
+└──────────┘                  └──────────┘                  └────────────┘
 ```
 
-1. **`parser.js`** watches your vault, parses `[[wikilinks]]` from every `.md` file, writes `graph.json`.
-2. **`index.html`** loads `graph.json`, runs a d3 force simulation on a fullscreen canvas, polls for updates every 5 seconds.
-3. **Plash** renders the HTML file as your desktop wallpaper.
+1. **`parser.js`** watches your vault, parses `[[wikilinks]]` and tags from every `.md` file, writes `graph.json`, and serves everything on `localhost:3000`.
+2. **`index.html`** loads `graph.json`, runs a d3 force simulation on a fullscreen canvas, polls for updates.
+3. **Plash / Lively** renders the page as your desktop wallpaper.
 
-The clean separation is the whole reason the Windows/Linux ports are nearly free — only the host changes.
+The clean separation means only the host changes per platform.
 
 ## Configuration
 
-`config.json`:
-
-```json
-{
-  "vaultPath": "/Users/you/Vault",
-  "accent": "#7c5cff",
-  "background": "#0a0a0f",
-  "refreshMs": 5000,
-  "linkOpacity": 0.18,
-  "nodeGlow": true,
-  "tagColors": {
-    "project": "#00ffd5",
-    "idea": "#ff6b9d",
-    "reference": "#ffa94d"
-  }
-}
-```
+Edit `config.json` directly, or use the settings page at `http://localhost:3000/settings.html`.
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -82,27 +70,23 @@ The clean separation is the whole reason the Windows/Linux ports are nearly free
 | `accent` | `#7c5cff` | Default node and edge color |
 | `background` | `#0a0a0f` | Canvas background color |
 | `refreshMs` | `5000` | Polling interval in ms (increase for 2000+ notes) |
-| `linkOpacity` | `0.18` | Edge line opacity (0–1) |
 | `nodeGlow` | `true` | Radial glow halo around each node |
+| `particles` | `true` | Dots flowing along edges |
+| `clusterByTag` | `true` | Same-tag nodes gravitate together |
+| `edgeColoring` | `true` | Edges inherit source node's tag color |
+| `backgroundGradient` | `true` | Subtle radial vignette with accent tint |
+| `depthOfField` | `true` | Peripheral nodes dimmer and smaller |
+| `noteFlare` | `true` | New notes flash white when they appear |
+| `hubLabels` | `false` | Show names on most-connected nodes |
 | `tagColors` | `{}` | Map of Obsidian tag → hex color |
 
 ### Tag-based coloring
 
 The parser reads the first tag from each note's frontmatter (`tags: [project, ...]`) or the first inline `#tag` in the body. If that tag has a color in `tagColors`, the node renders in that color instead of the accent.
 
-Notes with no tags use the `accent` color. Tags not listed in `tagColors` also fall back to `accent`.
+### Presets
 
-## Roadmap
-
-- [x] macOS (Plash)
-- [x] Windows (Lively Wallpaper)
-- [x] Tag-based node coloring
-- [x] Visual customization (background, glow, link opacity)
-- [ ] Linux X11 (xwinwrap + Chromium)
-- [ ] Linux Wayland (headless render → swww)
-- [ ] Per-monitor configs
-
-PRs welcome, especially for the platform ports.
+The settings page includes 8 one-click themes: Default, Cyberpunk, Synthwave, Ember, Ocean, Forest, Monochrome, and Solar.
 
 ## License
 
