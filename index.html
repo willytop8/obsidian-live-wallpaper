@@ -20,6 +20,8 @@ const DEFAULTS = {
 };
 let cfg = {...DEFAULTS};
 let sim, nodes=[], links=[], lastHash='';
+let maxDeg = 1;
+let tick = 0;
 
 function applyBackground(){ document.body.style.background = cfg.background; }
 
@@ -30,7 +32,9 @@ function resize(){
 }
 resize(); addEventListener('resize',resize);
 
-function hex2rgba(h,a){const n=parseInt(h.slice(1),16);return `rgba(${n>>16&255},${n>>8&255},${n&255},${a})`;}
+function hexToRGB(h){const n=parseInt(h.slice(1),16);return [n>>16&255,n>>8&255,n&255];}
+function rgba(r,g,b,a){return `rgba(${r},${g},${b},${a})`;}
+function hex2rgba(h,a){const [r,g,b]=hexToRGB(h);return rgba(r,g,b,a);}
 
 function nodeColor(n){ return (n.tag && cfg.tagColors[n.tag]) || cfg.accent; }
 
@@ -40,7 +44,6 @@ async function loadFile(name){
     if (!r.ok) return null;
     return await r.json();
   } catch(e){
-    // file:// fallback — fetch may be blocked, try XMLHttpRequest
     return new Promise(resolve => {
       try {
         const xhr = new XMLHttpRequest();
@@ -70,39 +73,119 @@ async function load(){
     const h = JSON.stringify(d.nodes.map(n=>n.id+'|'+(n.tag||'')).sort());
     if (h===lastHash) return; lastHash=h;
     const map = new Map(nodes.map(n=>[n.id,n]));
+    const spread = Math.min(innerWidth, innerHeight) * 0.4;
     nodes = d.nodes.map(n=>{
       const prev = map.get(n.id);
-      return prev ? Object.assign(prev, {tag:n.tag}) : {...n, x:innerWidth/2+(Math.random()-.5)*100, y:innerHeight/2+(Math.random()-.5)*100};
+      return prev ? Object.assign(prev, {tag:n.tag}) : {...n, x:innerWidth/2+(Math.random()-.5)*spread, y:innerHeight/2+(Math.random()-.5)*spread};
     });
     links = d.links;
     const deg={}; links.forEach(l=>{deg[l.source]=(deg[l.source]||0)+1;deg[l.target]=(deg[l.target]||0)+1;});
-    nodes.forEach(n=>n.r=2+Math.sqrt(deg[n.id]||0)*1.2);
+    maxDeg = Math.max(1, ...Object.values(deg));
+    nodes.forEach(n=>{
+      const d = deg[n.id]||0;
+      n.deg = d;
+      n.r = 2 + Math.sqrt(d) * 1.5;
+      // Importance: 0..1 based on degree
+      n.importance = Math.min(1, d / maxDeg);
+    });
     if (sim) sim.stop();
+    const count = nodes.length;
+    const charge = count > 200 ? -15 : count > 50 ? -25 : -30;
+    const dist = count > 200 ? 30 : 40;
     sim = d3.forceSimulation(nodes)
-      .force('link', d3.forceLink(links).id(d=>d.id).distance(40).strength(0.4))
-      .force('charge', d3.forceManyBody().strength(-30))
+      .force('link', d3.forceLink(links).id(d=>d.id).distance(dist).strength(0.3))
+      .force('charge', d3.forceManyBody().strength(charge))
       .force('center', d3.forceCenter(innerWidth/2, innerHeight/2))
       .force('collide', d3.forceCollide().radius(d=>d.r+2))
-      .alphaDecay(0.015).velocityDecay(0.5).on('tick', draw);
+      .alphaDecay(0.02).velocityDecay(0.6).on('tick', draw);
   } catch(e){ console.warn('load failed:', e.message); }
+}
+
+// Ambient breathing — keeps it alive after simulation cools
+function breathe(){
+  tick++;
+  if (sim && sim.alpha() < 0.01) {
+    // Gentle nudge to keep nodes drifting
+    nodes.forEach(n => {
+      const phase = tick * 0.003 + n.x * 0.001 + n.y * 0.001;
+      n.vx += Math.sin(phase) * 0.02;
+      n.vy += Math.cos(phase * 0.7) * 0.02;
+    });
+    sim.alpha(0.008);
+    sim.restart();
+  }
+  requestAnimationFrame(breathe);
 }
 
 function draw(){
   ctx.clearRect(0,0,innerWidth,innerHeight);
-  ctx.strokeStyle=hex2rgba(cfg.accent, cfg.linkOpacity); ctx.lineWidth=0.6; ctx.beginPath();
-  links.forEach(l=>{ctx.moveTo(l.source.x,l.source.y);ctx.lineTo(l.target.x,l.target.y);});
-  ctx.stroke();
+
+  // === Edges ===
+  links.forEach(l=>{
+    const sx=l.source.x, sy=l.source.y, tx=l.target.x, ty=l.target.y;
+    // Edge opacity scales with endpoint importance
+    const imp = Math.max(l.source.importance||0, l.target.importance||0);
+    const alpha = cfg.linkOpacity * (0.3 + imp * 0.7);
+    ctx.strokeStyle = hex2rgba(cfg.accent, alpha);
+    ctx.lineWidth = 0.4 + imp * 0.6;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(tx, ty);
+    ctx.stroke();
+  });
+
+  // === Nodes ===
   nodes.forEach(n=>{
     const c = nodeColor(n);
+    const [cr,cg,cb] = hexToRGB(c);
+    const imp = n.importance || 0;
+    const breathPhase = Math.sin(tick * 0.015 + n.x * 0.005) * 0.5 + 0.5;
+
     if (cfg.nodeGlow) {
-      const g=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,n.r+3);
-      g.addColorStop(0,hex2rgba(c,0.5)); g.addColorStop(1,hex2rgba(c,0));
-      ctx.beginPath(); ctx.arc(n.x,n.y,n.r+3,0,Math.PI*2); ctx.fillStyle=g; ctx.fill();
+      // Outer glow — larger for important nodes, pulses gently
+      const glowR = n.r + 4 + imp * 12 + breathPhase * 2;
+      const glowAlpha = 0.08 + imp * 0.15 + breathPhase * 0.03;
+      const g = ctx.createRadialGradient(n.x, n.y, n.r * 0.5, n.x, n.y, glowR);
+      g.addColorStop(0, rgba(cr, cg, cb, glowAlpha));
+      g.addColorStop(1, rgba(cr, cg, cb, 0));
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, glowR, 0, Math.PI * 2);
+      ctx.fillStyle = g;
+      ctx.fill();
     }
-    ctx.beginPath(); ctx.arc(n.x,n.y,n.r,0,Math.PI*2); ctx.fillStyle=c; ctx.fill();
+
+    // Core node — brighter center, opacity based on importance
+    const coreAlpha = 0.55 + imp * 0.35 + breathPhase * 0.1;
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+    ctx.fillStyle = rgba(cr, cg, cb, coreAlpha);
+    ctx.fill();
+
+    // Hot center dot for hub nodes
+    if (imp > 0.3) {
+      const dotR = n.r * 0.4;
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, dotR, 0, Math.PI * 2);
+      ctx.fillStyle = rgba(
+        Math.min(255, cr + 80),
+        Math.min(255, cg + 80),
+        Math.min(255, cb + 80),
+        0.7 + breathPhase * 0.3
+      );
+      ctx.fill();
+    }
   });
 }
 
 applyBackground();
-(async()=>{ await loadCfg(); await load(); setInterval(load, cfg.refreshMs); })();
+(async()=>{
+  await loadCfg(); await load();
+  breathe();
+  setInterval(load, cfg.refreshMs);
+  setInterval(async()=>{
+    const prev = JSON.stringify(cfg);
+    await loadCfg();
+    if (JSON.stringify(cfg) !== prev) { lastHash=''; await load(); }
+  }, 2000);
+})();
 </script></body></html>

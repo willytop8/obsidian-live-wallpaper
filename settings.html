@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wallpaper Settings</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0e0e14; --surface: #16161e; --border: #2a2a3a;
+    --text: #e0e0e8; --dim: #8888a0; --accent: #7c5cff;
+    --radius: 8px;
+  }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); padding: 24px; max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+  .subtitle { color: var(--dim); font-size: 13px; margin-bottom: 32px; }
+
+  .section { margin-bottom: 28px; }
+  .section-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); margin-bottom: 12px; }
+
+  .row { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: var(--surface); border: 1px solid var(--border); margin-bottom: -1px; }
+  .row:first-of-type { border-radius: var(--radius) var(--radius) 0 0; }
+  .row:last-of-type { border-radius: 0 0 var(--radius) var(--radius); margin-bottom: 0; }
+  .row:only-of-type { border-radius: var(--radius); }
+  .row label { font-size: 14px; }
+  .row .hint { font-size: 12px; color: var(--dim); margin-top: 2px; }
+
+  input[type="color"] { width: 36px; height: 28px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); cursor: pointer; padding: 1px; }
+  input[type="range"] { width: 120px; accent-color: var(--accent); }
+  input[type="number"] { width: 80px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); padding: 4px 8px; font-size: 14px; text-align: right; }
+  input[type="number"]:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+
+  .toggle { position: relative; width: 42px; height: 24px; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle .slider { position: absolute; inset: 0; background: var(--border); border-radius: 12px; cursor: pointer; transition: background 0.2s; }
+  .toggle .slider::before { content: ''; position: absolute; left: 3px; top: 3px; width: 18px; height: 18px; background: var(--text); border-radius: 50%; transition: transform 0.2s; }
+  .toggle input:checked + .slider { background: var(--accent); }
+  .toggle input:checked + .slider::before { transform: translateX(18px); }
+
+  .val { font-size: 13px; color: var(--dim); min-width: 32px; text-align: right; margin-left: 8px; }
+  .controls { display: flex; align-items: center; gap: 8px; }
+
+  /* Presets */
+  .presets { display: flex; gap: 8px; flex-wrap: wrap; }
+  .preset { padding: 8px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; font-size: 13px; color: var(--text); transition: border-color 0.15s; }
+  .preset:hover { border-color: var(--accent); }
+  .preset .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+
+  /* Tag colors */
+  .tag-list { display: flex; flex-direction: column; gap: 0; }
+  .tag-row { display: flex; align-items: center; padding: 10px 16px; background: var(--surface); border: 1px solid var(--border); margin-bottom: -1px; gap: 12px; }
+  .tag-row:first-child { border-radius: var(--radius) var(--radius) 0 0; }
+  .tag-row:last-child { border-radius: 0 0 var(--radius) var(--radius); margin-bottom: 0; }
+  .tag-row:only-child { border-radius: var(--radius); }
+  .tag-name { font-size: 13px; flex: 1; }
+  .tag-count { font-size: 12px; color: var(--dim); min-width: 30px; }
+  .tag-remove { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 16px; padding: 0 4px; }
+  .tag-remove:hover { color: #ff6b6b; }
+  .tag-empty { padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); color: var(--dim); font-size: 13px; text-align: center; }
+
+  /* Status */
+  .status { position: fixed; bottom: 16px; right: 16px; font-size: 12px; color: var(--dim); opacity: 0; transition: opacity 0.3s; }
+  .status.show { opacity: 1; }
+  .status.ok { color: #50c878; }
+  .status.err { color: #ff6b6b; }
+</style>
+</head>
+<body>
+
+<h1>Wallpaper Settings</h1>
+<p class="subtitle">Changes apply to the wallpaper in ~2 seconds.</p>
+
+<div class="section">
+  <div class="section-title">Presets</div>
+  <div class="presets" id="presets"></div>
+</div>
+
+<div class="section">
+  <div class="section-title">Colors</div>
+  <div class="row">
+    <div><label>Accent</label><div class="hint">Default node and edge color</div></div>
+    <input type="color" id="accent" value="#7c5cff">
+  </div>
+  <div class="row">
+    <div><label>Background</label></div>
+    <input type="color" id="background" value="#0a0a0f">
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Appearance</div>
+  <div class="row">
+    <div><label>Link opacity</label></div>
+    <div class="controls">
+      <input type="range" id="linkOpacity" min="0" max="100" value="18">
+      <span class="val" id="linkOpacityVal">0.18</span>
+    </div>
+  </div>
+  <div class="row">
+    <div><label>Node glow</label><div class="hint">Radial halo around each node</div></div>
+    <label class="toggle"><input type="checkbox" id="nodeGlow" checked><span class="slider"></span></label>
+  </div>
+  <div class="row">
+    <div><label>Refresh interval</label><div class="hint">How often the wallpaper checks for vault changes</div></div>
+    <div class="controls">
+      <input type="number" id="refreshMs" min="1000" max="60000" step="1000" value="5000">
+      <span class="val">ms</span>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Tag Colors</div>
+  <div id="tagList"></div>
+</div>
+
+<div class="status" id="status"></div>
+
+<script>
+const API = window.location.origin;
+let cfg = {};
+let allTags = {};
+
+const PRESETS = [
+  { name: 'Default', accent: '#7c5cff', background: '#0a0a0f' },
+  { name: 'Cyberpunk', accent: '#00ffd5', background: '#0a0a0f' },
+  { name: 'Synthwave', accent: '#ff6b9d', background: '#1a0a2e' },
+  { name: 'Ember', accent: '#ff6633', background: '#0f0a08' },
+  { name: 'Ocean', accent: '#00b4d8', background: '#03071e' },
+  { name: 'Forest', accent: '#52b788', background: '#081c15' },
+  { name: 'Monochrome', accent: '#888899', background: '#0a0a0a' },
+  { name: 'Solar', accent: '#ffd60a', background: '#10100e' },
+];
+
+function status(msg, type) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = 'status show ' + (type || '');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.className = 'status', 2000);
+}
+
+async function loadConfig() {
+  try {
+    const r = await fetch(API + '/api/config');
+    cfg = await r.json();
+    document.getElementById('accent').value = cfg.accent || '#7c5cff';
+    document.getElementById('background').value = cfg.background || '#0a0a0f';
+    document.getElementById('linkOpacity').value = Math.round((cfg.linkOpacity || 0.18) * 100);
+    document.getElementById('linkOpacityVal').textContent = (cfg.linkOpacity || 0.18).toFixed(2);
+    document.getElementById('nodeGlow').checked = cfg.nodeGlow !== false;
+    document.getElementById('refreshMs').value = cfg.refreshMs || 5000;
+  } catch (e) { status('Failed to load config', 'err'); }
+}
+
+async function loadTags() {
+  try {
+    const r = await fetch(API + '/api/tags');
+    allTags = await r.json();
+    renderTags();
+  } catch (e) {}
+}
+
+async function save(updates) {
+  try {
+    const r = await fetch(API + '/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates)
+    });
+    cfg = { ...cfg, ...await r.json() };
+    status('Saved', 'ok');
+  } catch (e) { status('Save failed', 'err'); }
+}
+
+function renderPresets() {
+  const el = document.getElementById('presets');
+  el.innerHTML = PRESETS.map(p =>
+    `<button class="preset" data-accent="${p.accent}" data-bg="${p.background}">` +
+    `<span class="dot" style="background:${p.accent}"></span>${p.name}</button>`
+  ).join('');
+  el.addEventListener('click', e => {
+    const btn = e.target.closest('.preset');
+    if (!btn) return;
+    const accent = btn.dataset.accent;
+    const background = btn.dataset.bg;
+    document.getElementById('accent').value = accent;
+    document.getElementById('background').value = background;
+    save({ accent, background });
+  });
+}
+
+function renderTags() {
+  const el = document.getElementById('tagList');
+  const tagColors = cfg.tagColors || {};
+  // Sort: colored tags first, then by count
+  const sorted = Object.entries(allTags).sort((a, b) => {
+    const ac = tagColors[a[0]] ? 1 : 0;
+    const bc = tagColors[b[0]] ? 1 : 0;
+    if (ac !== bc) return bc - ac;
+    return b[1] - a[1];
+  });
+
+  if (sorted.length === 0) {
+    el.innerHTML = '<div class="tag-empty">No tags found in vault. Add tags to your notes\' frontmatter to color them.</div>';
+    return;
+  }
+
+  el.innerHTML = '<div class="tag-list">' + sorted.map(([tag, count]) => {
+    const color = tagColors[tag] || '';
+    return `<div class="tag-row">
+      <input type="color" value="${color || cfg.accent || '#7c5cff'}" data-tag="${tag}" class="tag-color">
+      <span class="tag-name">${tag}</span>
+      <span class="tag-count">${count}</span>
+      ${color ? `<button class="tag-remove" data-tag="${tag}" title="Remove color">&times;</button>` : ''}
+    </div>`;
+  }).join('') + '</div>';
+
+  el.querySelectorAll('.tag-color').forEach(input => {
+    input.addEventListener('change', e => {
+      const tag = e.target.dataset.tag;
+      const tc = { ...(cfg.tagColors || {}), [tag]: e.target.value };
+      save({ tagColors: tc }).then(() => renderTags());
+    });
+  });
+  el.querySelectorAll('.tag-remove').forEach(btn => {
+    btn.addEventListener('click', e => {
+      const tag = e.target.dataset.tag;
+      const tc = { ...(cfg.tagColors || {}) };
+      delete tc[tag];
+      save({ tagColors: tc }).then(() => renderTags());
+    });
+  });
+}
+
+// Bind controls
+document.getElementById('accent').addEventListener('change', e => save({ accent: e.target.value }));
+document.getElementById('background').addEventListener('change', e => save({ background: e.target.value }));
+document.getElementById('linkOpacity').addEventListener('input', e => {
+  const v = e.target.value / 100;
+  document.getElementById('linkOpacityVal').textContent = v.toFixed(2);
+});
+document.getElementById('linkOpacity').addEventListener('change', e => save({ linkOpacity: e.target.value / 100 }));
+document.getElementById('nodeGlow').addEventListener('change', e => save({ nodeGlow: e.target.checked }));
+document.getElementById('refreshMs').addEventListener('change', e => {
+  const v = Math.max(1000, Math.min(60000, parseInt(e.target.value) || 5000));
+  e.target.value = v;
+  save({ refreshMs: v });
+});
+
+renderPresets();
+loadConfig().then(loadTags);
+</script>
+</body></html>

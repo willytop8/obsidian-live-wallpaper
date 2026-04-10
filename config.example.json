@@ -5,6 +5,7 @@
   "refreshMs": 5000,
   "linkOpacity": 0.18,
   "nodeGlow": true,
+  "port": 3000,
   "tagColors": {
     "project": "#00ffd5",
     "idea": "#ff6b9d",

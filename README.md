@@ -29,7 +29,9 @@ Edit `config.json` and set `vaultPath` to your Obsidian vault. Then:
 npm start
 ```
 
-Open Plash → **Add Website** → paste `file:///absolute/path/to/obsidian-live-wallpaper/index.html`. Done.
+Open Plash → **Add Website** → paste `http://localhost:3000`. Done.
+
+Open `http://localhost:3000/settings.html` in your browser to customize colors, themes, tag colors, and more.
 
 For autostart and troubleshooting, see [`macos-setup.md`](macos-setup.md).
 
