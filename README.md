@@ -112,7 +112,7 @@ The renderer ships with a local vendored copy of D3, so the wallpaper still work
 
 ### Duplicate note names
 
-This version assumes note names are unique across the vault. If two markdown files share the same basename, startup fails with a clear error instead of building a misleading graph. Rename one of the conflicting notes and restart the parser.
+If two markdown files share the same basename (e.g. `README.md` in different folders), the parser keeps the last occurrence it finds and logs a warning. This matches how Obsidian resolves ambiguous wikilinks. To avoid surprises, rename one of the conflicting notes.
 
 ### Tag-based coloring
 

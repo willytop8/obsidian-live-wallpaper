@@ -260,12 +260,11 @@ function extractTag(content) {
   return null;
 }
 
-function duplicateBasenameMessage(duplicates) {
-  const details = Array.from(duplicates.entries())
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([id, locations]) => `${id}: ${locations.map(p => path.relative(VAULT, p)).join(', ')}`)
-    .join('; ');
-  return `duplicate note basenames are unsupported because Obsidian wikilinks resolve by note name here. Rename one of these notes: ${details}`;
+function warnDuplicates(duplicates) {
+  console.warn(`warning: ${duplicates.size} duplicate basename(s) found — keeping last occurrence for each (like Obsidian's shortest-path resolution)`);
+  for (const [id, locations] of Array.from(duplicates.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
+    console.warn(`  ${id}: ${locations.map(p => path.relative(VAULT, p)).join(', ')}`);
+  }
 }
 
 function build() {
@@ -293,7 +292,7 @@ function build() {
   })(VAULT);
 
   if (duplicates.size > 0) {
-    throw new Error(duplicateBasenameMessage(duplicates));
+    warnDuplicates(duplicates);
   }
 
   const nodes = Object.keys(files).map(id => {
