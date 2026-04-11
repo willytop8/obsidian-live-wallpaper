@@ -51,6 +51,12 @@ Edit `config.json` and set `vaultPath` to your Obsidian vault. Then:
 npm start
 ```
 
+Optional verification before posting or packaging:
+
+```bash
+npm test
+```
+
 Point your wallpaper host to `http://127.0.0.1:3000` (examples below assume the default port — change if you set a different `port` in `config.json`):
 
 - **Plash**: menu bar → **Add Website** → paste `http://127.0.0.1:3000`
@@ -112,7 +118,7 @@ The renderer ships with a local vendored copy of D3, so the wallpaper still work
 
 ### Duplicate note names
 
-If two markdown files share the same basename (e.g. `README.md` in different folders), the parser keeps the last occurrence it finds and logs a warning. This matches how Obsidian resolves ambiguous wikilinks. To avoid surprises, rename one of the conflicting notes.
+If two markdown files share the same basename (e.g. `README.md` in different folders), startup fails with a clear error listing the conflicting paths. Rename one of the notes so wikilinks resolve unambiguously.
 
 ### Tag-based coloring
 

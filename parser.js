@@ -37,9 +37,14 @@ const PUBLIC_FILES = new Map([
 ]);
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 const MOTION_MODES = new Set(['light', 'balanced', 'showcase']);
-if (!fs.existsSync(cfgPath)) {
-  console.error('Missing config.json. Run: cp config.example.json config.json');
-  process.exit(1);
+
+function formatDuplicateBasenameError(duplicates, vaultPath) {
+  const lines = [`duplicate note basenames are not supported (${duplicates.size} conflict${duplicates.size === 1 ? '' : 's'} found)`];
+  for (const [id, locations] of Array.from(duplicates.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
+    lines.push(`  ${id}: ${locations.map(p => path.relative(vaultPath, p)).join(', ')}`);
+  }
+  lines.push('rename one of the conflicting notes so wikilinks resolve unambiguously');
+  return lines.join('\n');
 }
 
 function failConfig(message) {
@@ -211,31 +216,26 @@ function sanitizeConfigPatch(raw) {
   return patch;
 }
 
-function readConfigFile() {
+function readConfigFile(configPath = cfgPath) {
   try {
-    const raw = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     return sanitizePersistedConfig(raw);
   } catch (e) {
     failConfig(e.message);
   }
 }
 
-function writeConfigFile(nextCfg) {
-  const tmp = cfgPath + '.tmp';
+function writeConfigFile(nextCfg, configPath = cfgPath) {
+  const tmp = configPath + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(nextCfg, null, 2));
-  fs.renameSync(tmp, cfgPath);
+  fs.renameSync(tmp, configPath);
 }
 
-let cfg = readConfigFile();
-const VAULT = cfg.vaultPath;
-const PORT = cfg.port;
 const WIKILINK = /\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g;
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---/;
 const TAGS_FLOW = /^tags:\s*\[([^\]]*)\]/m;
 const TAGS_BLOCK = /^tags:\s*\r?\n((?:\s*-\s+.+\r?\n?)+)/m;
 const TAGS_INLINE = /(?:^|\s)#([a-zA-Z][\w-/]*)/g;
-
-let discoveredTags = {};
 
 function extractTag(content) {
   const fm = content.match(FRONTMATTER);
@@ -260,14 +260,7 @@ function extractTag(content) {
   return null;
 }
 
-function warnDuplicates(duplicates) {
-  console.warn(`warning: ${duplicates.size} duplicate basename(s) found — keeping last occurrence for each (like Obsidian's shortest-path resolution)`);
-  for (const [id, locations] of Array.from(duplicates.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
-    console.warn(`  ${id}: ${locations.map(p => path.relative(VAULT, p)).join(', ')}`);
-  }
-}
-
-function build() {
+function buildGraph(vaultPath, outPath = OUT) {
   const files = {};
   const tags = {};
   const duplicates = new Map();
@@ -289,10 +282,10 @@ function build() {
         if (tag) tags[id] = tag;
       }
     }
-  })(VAULT);
+  })(vaultPath);
 
   if (duplicates.size > 0) {
-    warnDuplicates(duplicates);
+    throw new Error(formatDuplicateBasenameError(duplicates, vaultPath));
   }
 
   const nodes = Object.keys(files).map(id => {
@@ -317,16 +310,16 @@ function build() {
   }
 
   // Track discovered tags with counts
-  discoveredTags = {};
+  const discoveredTags = {};
   for (const tag of Object.values(tags)) {
     discoveredTags[tag] = (discoveredTags[tag] || 0) + 1;
   }
 
-  const tmp = OUT + '.tmp';
+  const tmp = outPath + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify({ nodes, links }));
-  fs.renameSync(tmp, OUT);
+  fs.renameSync(tmp, outPath);
   const tagged = Object.keys(tags).length;
-  console.log(`graph: ${nodes.length} nodes, ${links.length} links, ${tagged} tagged`);
+  return { nodes, links, tagged, discoveredTags };
 }
 
 // --- HTTP server ---
@@ -376,87 +369,135 @@ function readBody(req, res) {
   });
 }
 
-const server = http.createServer(async (req, res) => {
-  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+function createRequestHandler(state) {
+  const publicFiles = new Map(PUBLIC_FILES);
+  publicFiles.set('/graph.json', state.outPath);
 
-  const requestUrl = new URL(req.url, 'http://127.0.0.1');
-  const url = requestUrl.pathname;
+  return async (req, res) => {
+    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
-  if (url === '/api/config' && req.method === 'GET') {
-    const { vaultPath, port, ...safe } = cfg;
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(safe));
-    return;
-  }
+    const requestUrl = new URL(req.url, 'http://127.0.0.1');
+    const url = requestUrl.pathname;
 
-  if (url === '/api/config' && req.method === 'POST') {
-    try {
-      const body = JSON.parse(await readBody(req, res));
-      const patch = sanitizeConfigPatch(body);
-      const updated = { ...cfg, ...patch, vaultPath: cfg.vaultPath, port: cfg.port };
-      writeConfigFile(updated);
-      cfg = updated;
-      const { vaultPath, port, ...safe } = updated;
+    if (url === '/favicon.ico') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    if (url === '/api/config' && req.method === 'GET') {
+      const { vaultPath, port, ...safe } = state.cfg;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(safe));
-    } catch (e) {
-      if (!res.writableEnded) {
-      res.writeHead(400);
-      res.end(JSON.stringify({ error: e.message }));
-      }
+      return;
     }
-    return;
-  }
 
-  if (url === '/api/tags' && req.method === 'GET') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(discoveredTags));
-    return;
-  }
+    if (url === '/api/config' && req.method === 'POST') {
+      try {
+        const body = JSON.parse(await readBody(req, res));
+        const patch = sanitizeConfigPatch(body);
+        const updated = { ...state.cfg, ...patch, vaultPath: state.cfg.vaultPath, port: state.cfg.port };
+        writeConfigFile(updated, state.configPath);
+        state.cfg = updated;
+        const { vaultPath, port, ...safe } = updated;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(safe));
+      } catch (e) {
+        if (!res.writableEnded) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      }
+      return;
+    }
 
-  // Static files
-  const filePath = PUBLIC_FILES.get(url);
-  if (!filePath) {
-    res.writeHead(404);
-    res.end('Not found');
-    return;
-  }
-  serveFile(res, filePath);
-});
+    if (url === '/api/tags' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(state.discoveredTags));
+      return;
+    }
 
-// --- Start ---
-
-try {
-  build();
-} catch (e) {
-  console.error(`startup failed: ${e.message}`);
-  process.exit(1);
+    const filePath = publicFiles.get(url);
+    if (!filePath) {
+      res.writeHead(404);
+      res.end('Not found');
+      return;
+    }
+    serveFile(res, filePath);
+  };
 }
 
-const watcher = chokidar.watch(VAULT, {
-  ignoreInitial: true,
-  ignored: [/(^|[/\\])\./, /\.(?!md$)[^.]+$/],
-  awaitWriteFinish: { stabilityThreshold: 300 }
-});
+function startApp(options = {}) {
+  const configPath = options.configPath || cfgPath;
+  const outPath = options.outPath || path.join(path.dirname(configPath), 'graph.json');
+  if (!fs.existsSync(configPath)) {
+    console.error('Missing config.json. Run: cp config.example.json config.json');
+    process.exit(1);
+  }
+  const state = {
+    cfg: readConfigFile(configPath),
+    configPath,
+    outPath,
+    discoveredTags: {}
+  };
+  const server = http.createServer(createRequestHandler(state));
 
-watcher
-  .on('all', () => {
+  const rebuild = () => {
+    const result = buildGraph(state.cfg.vaultPath, state.outPath);
+    state.discoveredTags = result.discoveredTags;
+    console.log(`graph: ${result.nodes.length} nodes, ${result.links.length} links, ${result.tagged} tagged`);
+    return result;
+  };
+
+  try {
+    rebuild();
+  } catch (e) {
+    console.error(`startup failed: ${e.message}`);
+    process.exit(1);
+  }
+
+  const watcher = chokidar.watch(state.cfg.vaultPath, {
+    ignoreInitial: true,
+    ignored: [/(^|[/\\])\./, /\.(?!md$)[^.]+$/],
+    awaitWriteFinish: { stabilityThreshold: 300 }
+  });
+
+  watcher.on('all', () => {
     try {
-      build();
+      rebuild();
     } catch (e) {
-      console.error('build failed:', e);
+      console.error(`build failed: ${e.message}`);
     }
   })
   .on('error', e => {
     console.error('watcher error:', e.message);
   });
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`wallpaper:  http://127.0.0.1:${PORT}`);
-  console.log(`settings:   http://127.0.0.1:${PORT}/settings.html`);
-});
+  server.listen(state.cfg.port, '127.0.0.1', () => {
+    console.log(`wallpaper:  http://127.0.0.1:${state.cfg.port}`);
+    console.log(`settings:   http://127.0.0.1:${state.cfg.port}/settings.html`);
+  });
 
-server.on('error', e => {
-  console.error(`server error: ${e.message}`);
-  process.exit(1);
-});
+  server.on('error', e => {
+    console.error(`server error: ${e.message}`);
+    process.exit(1);
+  });
+
+  return { server, watcher, state, rebuild };
+}
+
+if (require.main === module) {
+  startApp();
+}
+
+module.exports = {
+  DEFAULTS,
+  sanitizePersistedConfig,
+  sanitizeConfigPatch,
+  formatDuplicateBasenameError,
+  buildGraph,
+  createRequestHandler,
+  readConfigFile,
+  writeConfigFile,
+  startApp
+};

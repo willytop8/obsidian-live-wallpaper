@@ -18,7 +18,9 @@
   ],
   "main": "parser.js",
   "scripts": {
-    "start": "node parser.js"
+    "start": "node parser.js",
+    "smoke": "node scripts/smoke.js",
+    "test": "npm run smoke"
   },
   "engines": {
     "node": ">=18"
