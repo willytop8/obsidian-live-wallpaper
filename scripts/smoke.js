@@ -130,30 +130,57 @@ async function runHappyPath(tmpRoot) {
   assert(rebuilt.nodes.length === 3, 'expected rebuild to include new note');
 }
 
-async function runDuplicateFailure(tmpRoot) {
+async function runDuplicateBasenames(tmpRoot) {
   const vaultDir = path.join(tmpRoot, 'duplicate-vault');
   const outFile = path.join(tmpRoot, 'duplicate-graph.json');
 
-  writeFile(path.join(vaultDir, 'Alpha.md'), '# Alpha\n');
-  writeFile(path.join(vaultDir, 'Beta.md'), '# Beta\n');
-  writeFile(path.join(vaultDir, 'nested', 'Beta.md'), '# Duplicate Beta\n');
+  // Alpha is unique, Beta appears twice — root and nested/
+  writeFile(path.join(vaultDir, 'Alpha.md'), '# Alpha\n\n[[Beta]]\n');
+  writeFile(path.join(vaultDir, 'Beta.md'), '# Beta root\n\n[[Alpha]]\n');
+  writeFile(path.join(vaultDir, 'nested', 'Beta.md'), '# Beta nested\n\n[[Alpha]]\n');
 
-  let error;
-  try {
-    buildGraph(vaultDir, outFile);
-  } catch (nextError) {
-    error = nextError;
-  }
-  assert(error, 'expected duplicate basenames to fail');
-  assert(error.message.includes('duplicate note basenames are not supported'), 'missing duplicate basename error');
-  assert(error.message.includes('nested/Beta.md'), 'expected duplicate error to list conflicting paths');
+  const result = buildGraph(vaultDir, outFile);
+
+  // Should produce 3 nodes, not crash
+  assert(result.nodes.length === 3, `expected 3 nodes, got ${result.nodes.length}`);
+
+  // Alpha stays short since it's unique
+  const ids = result.nodes.map(n => n.id).sort();
+  assert(ids.includes('Alpha'), 'expected unique basename to keep short id');
+
+  // Both Betas should have folder-prefixed IDs
+  assert(ids.some(id => id === 'Beta' || id.endsWith('/Beta')) === false || ids.filter(id => id === 'Beta' || id.includes('Beta')).length === 2,
+    'expected both Beta notes to appear as nodes');
+  const betaIds = ids.filter(id => id.includes('Beta'));
+  assert(betaIds.length === 2, `expected 2 Beta nodes, got ${betaIds.length}`);
+  assert(betaIds.every(id => id.includes('/')), 'expected duplicate basenames to use folder/basename IDs');
+
+  // [[Beta]] in Alpha.md should link to BOTH Betas
+  const alphaLinks = result.links.filter(l => l.source === 'Alpha');
+  assert(alphaLinks.length === 2, `expected Alpha to link to both Betas, got ${alphaLinks.length} links`);
+
+  // Both Betas link back to Alpha
+  const betaToAlpha = result.links.filter(l => l.target === 'Alpha' && l.source !== 'Alpha');
+  assert(betaToAlpha.length === 2, `expected both Betas to link to Alpha, got ${betaToAlpha.length}`);
+
+  // Duplicate nodes should have a label field with the short basename
+  const betaNodes = result.nodes.filter(n => n.id.includes('Beta'));
+  assert(betaNodes.every(n => n.label === 'Beta'), 'expected duplicate nodes to have label field');
+
+  // Alpha should NOT have a label field (id is already the basename)
+  const alphaNode = result.nodes.find(n => n.id === 'Alpha');
+  assert(alphaNode.label === undefined, 'expected unique nodes to omit label field');
+
+  // graph.json should be valid
+  const stored = JSON.parse(fs.readFileSync(outFile, 'utf8'));
+  assert(stored.nodes.length === 3, 'expected graph.json to contain all 3 nodes');
 }
 
 async function main() {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'obsidian-live-wallpaper-smoke-'));
   try {
     await runHappyPath(tmpRoot);
-    await runDuplicateFailure(tmpRoot);
+    await runDuplicateBasenames(tmpRoot);
     console.log('smoke: ok');
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });

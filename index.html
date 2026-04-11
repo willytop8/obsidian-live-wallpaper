@@ -635,7 +635,7 @@ function drawLabels() {
     const dofAlpha = cfg.depthOfField ? 1 - distance * 0.4 : 1;
     if (dofAlpha <= 0.12) continue;
 
-    const label = truncateLabel(node.id, 28);
+    const label = truncateLabel(node.label || node.id, 28);
     const fontSize = Math.max(10, 11 + (node.importance || 0) * 5);
     ctx.font = `${fontSize}px -apple-system, BlinkMacSystemFont, 'Inter', sans-serif`;
     const textWidth = ctx.measureText(label).width;

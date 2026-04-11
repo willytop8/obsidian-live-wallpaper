@@ -120,7 +120,7 @@ The renderer ships with a local vendored copy of D3, so the wallpaper still work
 
 ### Duplicate note names
 
-If two markdown files share the same basename (e.g. `README.md` in different folders), startup fails with a clear error listing the conflicting paths. Rename one of the notes so wikilinks resolve unambiguously.
+If two markdown files share the same basename (e.g. `Index.md` in different folders), the parser automatically prefixes their node IDs with the folder path so both appear in the graph. A `[[Index]]` wikilink will connect to all notes named `Index`. Labels still show the short name.
 
 ### Tag-based coloring
 

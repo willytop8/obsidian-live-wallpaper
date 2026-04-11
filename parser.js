@@ -38,13 +38,12 @@ const PUBLIC_FILES = new Map([
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 const MOTION_MODES = new Set(['light', 'balanced', 'showcase']);
 
-function formatDuplicateBasenameError(duplicates, vaultPath) {
-  const lines = [`duplicate note basenames are not supported (${duplicates.size} conflict${duplicates.size === 1 ? '' : 's'} found)`];
-  for (const [id, locations] of Array.from(duplicates.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
-    lines.push(`  ${id}: ${locations.map(p => path.relative(vaultPath, p)).join(', ')}`);
-  }
-  lines.push('rename one of the conflicting notes so wikilinks resolve unambiguously');
-  return lines.join('\n');
+function noteId(basename, filePath, vaultPath, duplicatedBasenames) {
+  if (!duplicatedBasenames.has(basename)) return basename;
+  const rel = path.relative(vaultPath, filePath).replace(/\.md$/, '').replace(/\\/g, '/');
+  // Root-level files have no folder separator — prefix with ./ so every
+  // duplicate gets a visually distinct path-based ID
+  return rel.includes('/') ? rel : './' + rel;
 }
 
 function failConfig(message) {
@@ -261,39 +260,54 @@ function extractTag(content) {
 }
 
 function buildGraph(vaultPath, outPath = OUT) {
-  const files = {};
-  const tags = {};
-  const duplicates = new Map();
+  // First pass: collect every .md file and detect which basenames appear more than once
+  const raw = [];
+  const basenameCounts = {};
   (function walk(dir) {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       if (e.name.startsWith('.')) continue;
       const p = path.join(dir, e.name);
       if (e.isDirectory()) walk(p);
       else if (e.name.endsWith('.md')) {
-        const id = e.name.replace(/\.md$/, '');
-        if (files[id] !== undefined) {
-          const existing = duplicates.get(id) || [files[id].path];
-          existing.push(p);
-          duplicates.set(id, existing);
-        }
-        const content = fs.readFileSync(p, 'utf8');
-        files[id] = { content, path: p };
-        const tag = extractTag(content);
-        if (tag) tags[id] = tag;
+        const basename = e.name.replace(/\.md$/, '');
+        raw.push({ basename, filePath: p });
+        basenameCounts[basename] = (basenameCounts[basename] || 0) + 1;
       }
     }
   })(vaultPath);
 
-  if (duplicates.size > 0) {
-    throw new Error(formatDuplicateBasenameError(duplicates, vaultPath));
+  const duplicatedBasenames = new Set(
+    Object.entries(basenameCounts).filter(([, c]) => c > 1).map(([b]) => b)
+  );
+
+  // Second pass: assign IDs, read content, extract tags
+  // Unique basenames keep their short name; duplicates get folder/basename
+  const files = {};
+  const tags = {};
+  // Maps a basename to all node IDs that share it (for wikilink resolution)
+  const basenameToIds = {};
+  for (const { basename, filePath } of raw) {
+    const id = noteId(basename, filePath, vaultPath, duplicatedBasenames);
+    const content = fs.readFileSync(filePath, 'utf8');
+    files[id] = { content, path: filePath, basename };
+    const tag = extractTag(content);
+    if (tag) tags[id] = tag;
+    if (!basenameToIds[basename]) basenameToIds[basename] = [];
+    basenameToIds[basename].push(id);
+  }
+
+  if (duplicatedBasenames.size > 0) {
+    const names = Array.from(duplicatedBasenames).sort().join(', ');
+    console.log(`note: ${duplicatedBasenames.size} duplicate basename${duplicatedBasenames.size === 1 ? '' : 's'} resolved with folder prefix (${names})`);
   }
 
   const nodes = Object.keys(files).map(id => {
     const node = { id };
+    if (files[id].basename !== id) node.label = files[id].basename;
     if (tags[id]) node.tag = tags[id];
     return node;
   });
-  const set = new Set(nodes.map(n => n.id));
+  const nodeSet = new Set(nodes.map(n => n.id));
   const links = [];
   const linkSet = new Set();
   for (const [src, file] of Object.entries(files)) {
@@ -301,10 +315,15 @@ function buildGraph(vaultPath, outPath = OUT) {
     let m;
     while ((m = WIKILINK.exec(file.content)) !== null) {
       const tgt = m[1].trim();
-      const key = src + '\0' + tgt;
-      if (set.has(tgt) && tgt !== src && !linkSet.has(key)) {
-        linkSet.add(key);
-        links.push({ source: src, target: tgt });
+      // Resolve wikilink by basename — may match multiple IDs if duplicated
+      const targetIds = basenameToIds[tgt] || (nodeSet.has(tgt) ? [tgt] : []);
+      for (const targetId of targetIds) {
+        if (targetId === src) continue;
+        const key = src + '\0' + targetId;
+        if (!linkSet.has(key)) {
+          linkSet.add(key);
+          links.push({ source: src, target: targetId });
+        }
       }
     }
   }
@@ -494,7 +513,7 @@ module.exports = {
   DEFAULTS,
   sanitizePersistedConfig,
   sanitizeConfigPatch,
-  formatDuplicateBasenameError,
+  noteId,
   buildGraph,
   createRequestHandler,
   readConfigFile,
