@@ -33,7 +33,7 @@ The renderer is tuned for actual desktop use:
 
 ## Install
 
-You'll need [Node.js](https://nodejs.org) (v14+) and a wallpaper host app:
+You'll need [Node.js](https://nodejs.org) (v18+) and a wallpaper host app:
 
 - **macOS**: [Plash](https://apps.apple.com/us/app/plash/id1494023538) (free, Mac App Store)
 - **Windows**: [Lively Wallpaper](https://www.rocksdanister.com/lively/) (free, open source)
@@ -56,7 +56,7 @@ Point your wallpaper host to `http://127.0.0.1:3000` (or `http://localhost:3000`
 - **Plash**: menu bar → **Add Website** → paste `http://127.0.0.1:3000`
 - **Lively**: click **+** → **Open URL** → paste `http://127.0.0.1:3000`
 
-Open `http://127.0.0.1:3000/settings.html` to customize everything.
+Open `http://127.0.0.1:3000/settings.html` to customize the visual settings. `vaultPath` and `port` stay in `config.json`.
 
 For autostart and troubleshooting, see the platform-specific guides:
 - [`macos-setup.md`](macos-setup.md)
@@ -83,6 +83,8 @@ The clean separation means only the host changes per platform.
 
 Edit `config.json` directly, or use the settings page at `http://127.0.0.1:3000/settings.html`.
 
+The renderer ships with a local vendored copy of D3, so the wallpaper still works offline after `npm install`.
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `vaultPath` | — | Absolute path to your Obsidian vault |
@@ -107,6 +109,10 @@ Edit `config.json` directly, or use the settings page at `http://127.0.0.1:3000/
 | `labelMinImportance` | `0.22` | Minimum node importance required before labels appear |
 | `autoScaleLargeVaults` | `true` | Automatically reduces particles, labels, and edge density on dense graphs |
 | `tagColors` | `{}` | Map of Obsidian tag → hex color |
+
+### Duplicate note names
+
+This version assumes note names are unique across the vault. If two markdown files share the same basename, startup fails with a clear error instead of building a misleading graph. Rename one of the conflicting notes and restart the parser.
 
 ### Tag-based coloring
 

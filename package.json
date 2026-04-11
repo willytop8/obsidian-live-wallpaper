@@ -1,11 +1,30 @@
 {
   "name": "obsidian-live-wallpaper",
   "version": "0.1.0",
-  "private": true,
   "description": "Your Obsidian vault graph as a live desktop wallpaper",
+  "author": "William Ricchiuti",
+  "homepage": "https://github.com/willytop8/obsidian-live-wallpaper#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/willytop8/obsidian-live-wallpaper.git"
+  },
+  "keywords": [
+    "obsidian",
+    "wallpaper",
+    "graph",
+    "desktop",
+    "d3",
+    "live-wallpaper"
+  ],
   "main": "parser.js",
-  "scripts": { "start": "node parser.js" },
-  "engines": { "node": ">=14" },
+  "scripts": {
+    "start": "node parser.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "license": "MIT",
-  "dependencies": { "chokidar": "^3.6.0" }
+  "dependencies": {
+    "chokidar": "^3.6.0"
+  }
 }

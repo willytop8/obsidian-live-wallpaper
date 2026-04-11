@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org) (v14+)
+- [Node.js](https://nodejs.org) (v18+)
 - [Lively Wallpaper](https://www.rocksdanister.com/lively/) — free, open-source wallpaper engine from the Microsoft Store or GitHub
 
 ## Install

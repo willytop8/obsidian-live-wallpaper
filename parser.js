@@ -32,6 +32,7 @@ const PUBLIC_FILES = new Map([
   ['/', path.join(__dirname, 'index.html')],
   ['/index.html', path.join(__dirname, 'index.html')],
   ['/settings.html', path.join(__dirname, 'settings.html')],
+  ['/vendor/d3.min.js', path.join(__dirname, 'vendor', 'd3.min.js')],
   ['/graph.json', OUT]
 ]);
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
@@ -259,10 +260,18 @@ function extractTag(content) {
   return null;
 }
 
+function duplicateBasenameMessage(duplicates) {
+  const details = Array.from(duplicates.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([id, locations]) => `${id}: ${locations.map(p => path.relative(VAULT, p)).join(', ')}`)
+    .join('; ');
+  return `duplicate note basenames are unsupported because Obsidian wikilinks resolve by note name here. Rename one of these notes: ${details}`;
+}
+
 function build() {
   const files = {};
   const tags = {};
-  const seen = {};
+  const duplicates = new Map();
   (function walk(dir) {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       if (e.name.startsWith('.')) continue;
@@ -271,18 +280,21 @@ function build() {
       else if (e.name.endsWith('.md')) {
         const id = e.name.replace(/\.md$/, '');
         if (files[id] !== undefined) {
-          if (!seen[id]) {
-            console.warn(`duplicate basename: "${id}" — keeping last occurrence`);
-            seen[id] = true;
-          }
+          const existing = duplicates.get(id) || [files[id].path];
+          existing.push(p);
+          duplicates.set(id, existing);
         }
         const content = fs.readFileSync(p, 'utf8');
-        files[id] = content;
+        files[id] = { content, path: p };
         const tag = extractTag(content);
         if (tag) tags[id] = tag;
       }
     }
   })(VAULT);
+
+  if (duplicates.size > 0) {
+    throw new Error(duplicateBasenameMessage(duplicates));
+  }
 
   const nodes = Object.keys(files).map(id => {
     const node = { id };
@@ -292,10 +304,10 @@ function build() {
   const set = new Set(nodes.map(n => n.id));
   const links = [];
   const linkSet = new Set();
-  for (const [src, content] of Object.entries(files)) {
+  for (const [src, file] of Object.entries(files)) {
     WIKILINK.lastIndex = 0;
     let m;
-    while ((m = WIKILINK.exec(content)) !== null) {
+    while ((m = WIKILINK.exec(file.content)) !== null) {
       const tgt = m[1].trim();
       const key = src + '\0' + tgt;
       if (set.has(tgt) && tgt !== src && !linkSet.has(key)) {
@@ -415,7 +427,12 @@ const server = http.createServer(async (req, res) => {
 
 // --- Start ---
 
-build();
+try {
+  build();
+} catch (e) {
+  console.error(`startup failed: ${e.message}`);
+  process.exit(1);
+}
 
 const watcher = chokidar.watch(VAULT, {
   ignoreInitial: true,
