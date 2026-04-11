@@ -27,6 +27,7 @@
   input[type="color"] { width: 36px; height: 28px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); cursor: pointer; padding: 1px; }
   input[type="range"] { width: 120px; accent-color: var(--accent); }
   input[type="number"] { width: 80px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); padding: 4px 8px; font-size: 14px; text-align: right; }
+  select { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 6px 10px; font-size: 13px; }
   input[type="number"]:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
 
   .toggle { position: relative; width: 42px; height: 24px; flex-shrink: 0; }
@@ -104,10 +105,24 @@
     <div><label>Cluster by tag</label><div class="hint">Same-tag nodes gravitate together</div></div>
     <label class="toggle"><input type="checkbox" id="clusterByTag" checked><span class="slider"></span></label>
   </div>
+  <div class="row">
+    <div><label>Cluster halos</label><div class="hint">Soft color clouds behind tag groups</div></div>
+    <label class="toggle"><input type="checkbox" id="clusterHalos" checked><span class="slider"></span></label>
+  </div>
 </div>
 
 <div class="section">
   <div class="section-title">Effects</div>
+  <div class="row">
+    <div><label>Motion mode</label><div class="hint">Ambient movement intensity</div></div>
+    <div class="controls">
+      <select id="motionMode">
+        <option value="light">Light</option>
+        <option value="balanced">Balanced</option>
+        <option value="showcase">Showcase</option>
+      </select>
+    </div>
+  </div>
   <div class="row">
     <div><label>Particles</label><div class="hint">Dots flowing along edges</div></div>
     <label class="toggle"><input type="checkbox" id="particles" checked><span class="slider"></span></label>
@@ -152,10 +167,21 @@
       <input type="number" id="hubLabelCount" min="1" max="50" value="5">
     </div>
   </div>
+  <div class="row">
+    <div><label>Label threshold</label><div class="hint">Hide labels on less-important notes</div></div>
+    <div class="controls">
+      <input type="range" id="labelMinImportance" min="0" max="100" value="22">
+      <span class="val" id="labelMinImportanceVal">0.22</span>
+    </div>
+  </div>
 </div>
 
 <div class="section">
   <div class="section-title">Performance</div>
+  <div class="row">
+    <div><label>Auto-scale large vaults</label><div class="hint">Reduce particles, labels, and edge density on dense graphs</div></div>
+    <label class="toggle"><input type="checkbox" id="autoScaleLargeVaults" checked><span class="slider"></span></label>
+  </div>
   <div class="row">
     <div><label>Refresh interval</label><div class="hint">How often the wallpaper checks for vault changes</div></div>
     <div class="controls">
@@ -178,15 +204,69 @@ let cfg = {};
 let allTags = {};
 
 const PRESETS = [
-  { name: 'Default', accent: '#7c5cff', background: '#0a0a0f' },
-  { name: 'Cyberpunk', accent: '#00ffd5', background: '#0a0a0f' },
-  { name: 'Synthwave', accent: '#ff6b9d', background: '#1a0a2e' },
-  { name: 'Ember', accent: '#ff6633', background: '#0f0a08' },
-  { name: 'Ocean', accent: '#00b4d8', background: '#03071e' },
-  { name: 'Forest', accent: '#52b788', background: '#081c15' },
-  { name: 'Monochrome', accent: '#888899', background: '#0a0a0a' },
-  { name: 'Solar', accent: '#ffd60a', background: '#10100e' },
+  {
+    name: 'Minimal',
+    accent: '#d8e1ff',
+    background: '#080b12',
+    config: { accent: '#d8e1ff', background: '#080b12', linkOpacity: 0.12, nodeGlow: true, particles: false, particleSpeed: 0.8, particleDensity: 0.14, motionMode: 'light', clusterByTag: true, clusterHalos: false, backgroundGradient: true, hubLabels: true, hubLabelCount: 4, labelMinImportance: 0.28, depthOfField: true, noteFlare: false, autoScaleLargeVaults: true }
+  },
+  {
+    name: 'Ambient',
+    accent: '#7c5cff',
+    background: '#0a0a0f',
+    config: { accent: '#7c5cff', background: '#0a0a0f', linkOpacity: 0.18, nodeGlow: true, particles: true, particleSpeed: 1, particleDensity: 0.28, motionMode: 'balanced', clusterByTag: true, clusterHalos: true, backgroundGradient: true, hubLabels: false, hubLabelCount: 5, labelMinImportance: 0.22, depthOfField: true, noteFlare: true, autoScaleLargeVaults: true }
+  },
+  {
+    name: 'Neon',
+    accent: '#00ffd5',
+    background: '#050816',
+    config: { accent: '#00ffd5', background: '#050816', linkOpacity: 0.24, nodeGlow: true, particles: true, particleSpeed: 1.25, particleDensity: 0.4, motionMode: 'showcase', clusterByTag: true, clusterHalos: true, backgroundGradient: true, hubLabels: true, hubLabelCount: 6, labelMinImportance: 0.24, depthOfField: true, noteFlare: true, autoScaleLargeVaults: true }
+  },
+  {
+    name: 'Ember',
+    accent: '#ff7a45',
+    background: '#100806',
+    config: { accent: '#ff7a45', background: '#100806', linkOpacity: 0.2, nodeGlow: true, particles: true, particleSpeed: 0.95, particleDensity: 0.24, motionMode: 'balanced', clusterByTag: true, clusterHalos: true, backgroundGradient: true, hubLabels: true, hubLabelCount: 4, labelMinImportance: 0.26, depthOfField: false, noteFlare: true, autoScaleLargeVaults: true }
+  },
+  {
+    name: 'Monochrome',
+    accent: '#b4bccd',
+    background: '#07080b',
+    config: { accent: '#b4bccd', background: '#07080b', linkOpacity: 0.14, nodeGlow: true, particles: false, particleSpeed: 0.8, particleDensity: 0.12, motionMode: 'light', clusterByTag: false, clusterHalos: false, backgroundGradient: true, hubLabels: true, hubLabelCount: 5, labelMinImportance: 0.2, depthOfField: true, noteFlare: false, autoScaleLargeVaults: true }
+  },
+  {
+    name: 'Galaxy',
+    accent: '#89a7ff',
+    background: '#060916',
+    config: { accent: '#89a7ff', background: '#060916', linkOpacity: 0.16, nodeGlow: true, particles: true, particleSpeed: 1.1, particleDensity: 0.32, motionMode: 'balanced', clusterByTag: true, clusterHalos: true, backgroundGradient: true, hubLabels: false, hubLabelCount: 5, labelMinImportance: 0.3, depthOfField: true, noteFlare: true, autoScaleLargeVaults: true }
+  }
 ];
+
+function applyForm() {
+  document.getElementById('accent').value = cfg.accent ?? '#7c5cff';
+  document.getElementById('background').value = cfg.background ?? '#0a0a0f';
+  document.getElementById('nodeGlow').checked = cfg.nodeGlow !== false;
+  document.getElementById('edgeColoring').checked = cfg.edgeColoring !== false;
+  document.getElementById('clusterByTag').checked = cfg.clusterByTag !== false;
+  document.getElementById('clusterHalos').checked = cfg.clusterHalos !== false;
+  document.getElementById('linkOpacity').value = Math.round((cfg.linkOpacity ?? 0.18) * 100);
+  document.getElementById('linkOpacityVal').textContent = (cfg.linkOpacity ?? 0.18).toFixed(2);
+  document.getElementById('motionMode').value = cfg.motionMode ?? 'balanced';
+  document.getElementById('particles').checked = cfg.particles !== false;
+  document.getElementById('particleSpeed').value = Math.round((cfg.particleSpeed ?? 1) * 100);
+  document.getElementById('particleSpeedVal').textContent = (cfg.particleSpeed ?? 1).toFixed(1);
+  document.getElementById('particleDensity').value = Math.round((cfg.particleDensity ?? 0.3) * 100);
+  document.getElementById('particleDensityVal').textContent = (cfg.particleDensity ?? 0.3).toFixed(2);
+  document.getElementById('backgroundGradient').checked = cfg.backgroundGradient !== false;
+  document.getElementById('depthOfField').checked = cfg.depthOfField !== false;
+  document.getElementById('noteFlare').checked = cfg.noteFlare !== false;
+  document.getElementById('hubLabels').checked = cfg.hubLabels === true;
+  document.getElementById('hubLabelCount').value = cfg.hubLabelCount ?? 5;
+  document.getElementById('labelMinImportance').value = Math.round((cfg.labelMinImportance ?? 0.22) * 100);
+  document.getElementById('labelMinImportanceVal').textContent = (cfg.labelMinImportance ?? 0.22).toFixed(2);
+  document.getElementById('autoScaleLargeVaults').checked = cfg.autoScaleLargeVaults !== false;
+  document.getElementById('refreshMs').value = cfg.refreshMs ?? 5000;
+}
 
 function status(msg, type) {
   const el = document.getElementById('status');
@@ -199,36 +279,16 @@ function status(msg, type) {
 async function loadConfig() {
   try {
     const r = await fetch(API + '/api/config');
+    if (!r.ok) throw new Error(`config load failed: ${r.status}`);
     cfg = await r.json();
-    // Colors
-    document.getElementById('accent').value = cfg.accent || '#7c5cff';
-    document.getElementById('background').value = cfg.background || '#0a0a0f';
-    // Nodes
-    document.getElementById('nodeGlow').checked = cfg.nodeGlow !== false;
-    document.getElementById('edgeColoring').checked = cfg.edgeColoring !== false;
-    document.getElementById('linkOpacity').value = Math.round((cfg.linkOpacity || 0.18) * 100);
-    document.getElementById('linkOpacityVal').textContent = (cfg.linkOpacity || 0.18).toFixed(2);
-    document.getElementById('clusterByTag').checked = cfg.clusterByTag !== false;
-    // Effects
-    document.getElementById('particles').checked = cfg.particles !== false;
-    document.getElementById('particleSpeed').value = Math.round((cfg.particleSpeed || 1) * 100);
-    document.getElementById('particleSpeedVal').textContent = (cfg.particleSpeed || 1).toFixed(1);
-    document.getElementById('particleDensity').value = Math.round((cfg.particleDensity || 0.3) * 100);
-    document.getElementById('particleDensityVal').textContent = (cfg.particleDensity || 0.3).toFixed(2);
-    document.getElementById('backgroundGradient').checked = cfg.backgroundGradient !== false;
-    document.getElementById('depthOfField').checked = cfg.depthOfField !== false;
-    document.getElementById('noteFlare').checked = cfg.noteFlare !== false;
-    // Labels
-    document.getElementById('hubLabels').checked = cfg.hubLabels === true;
-    document.getElementById('hubLabelCount').value = cfg.hubLabelCount || 5;
-    // Performance
-    document.getElementById('refreshMs').value = cfg.refreshMs || 5000;
+    applyForm();
   } catch (e) { status('Failed to load config', 'err'); }
 }
 
 async function loadTags() {
   try {
     const r = await fetch(API + '/api/tags');
+    if (!r.ok) throw new Error(`tag load failed: ${r.status}`);
     allTags = await r.json();
     renderTags();
   } catch (e) {}
@@ -241,25 +301,32 @@ async function save(updates) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates)
     });
-    cfg = { ...cfg, ...await r.json() };
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || `save failed: ${r.status}`);
+    cfg = { ...cfg, ...data };
     status('Saved', 'ok');
-  } catch (e) { status('Save failed', 'err'); }
+    return true;
+  } catch (e) {
+    status(e.message || 'Save failed', 'err');
+    return false;
+  }
 }
 
 function renderPresets() {
   const el = document.getElementById('presets');
   el.innerHTML = PRESETS.map(p =>
-    `<button class="preset" data-accent="${p.accent}" data-bg="${p.background}">` +
+    `<button class="preset" data-name="${p.name}">` +
     `<span class="dot" style="background:${p.accent}"></span>${p.name}</button>`
   ).join('');
-  el.addEventListener('click', e => {
+  el.addEventListener('click', async e => {
     const btn = e.target.closest('.preset');
     if (!btn) return;
-    const accent = btn.dataset.accent;
-    const background = btn.dataset.bg;
-    document.getElementById('accent').value = accent;
-    document.getElementById('background').value = background;
-    save({ accent, background });
+    const preset = PRESETS.find(p => p.name === btn.dataset.name);
+    if (!preset) return;
+    if (await save(preset.config)) {
+      applyForm();
+      renderTags();
+    }
   });
 }
 
@@ -289,18 +356,18 @@ function renderTags() {
   }).join('') + '</div>';
 
   el.querySelectorAll('.tag-color').forEach(input => {
-    input.addEventListener('change', e => {
+    input.addEventListener('change', async e => {
       const tag = e.target.dataset.tag;
       const tc = { ...(cfg.tagColors || {}), [tag]: e.target.value };
-      save({ tagColors: tc }).then(() => renderTags());
+      if (await save({ tagColors: tc })) renderTags();
     });
   });
   el.querySelectorAll('.tag-remove').forEach(btn => {
-    btn.addEventListener('click', e => {
+    btn.addEventListener('click', async e => {
       const tag = e.target.dataset.tag;
       const tc = { ...(cfg.tagColors || {}) };
       delete tc[tag];
-      save({ tagColors: tc }).then(() => renderTags());
+      if (await save({ tagColors: tc })) renderTags();
     });
   });
 }
@@ -310,9 +377,11 @@ document.getElementById('accent').addEventListener('change', e => save({ accent:
 document.getElementById('background').addEventListener('change', e => save({ background: e.target.value }));
 
 // Toggles
-['nodeGlow','edgeColoring','clusterByTag','particles','backgroundGradient','depthOfField','noteFlare','hubLabels'].forEach(id => {
+['nodeGlow','edgeColoring','clusterByTag','clusterHalos','particles','backgroundGradient','depthOfField','noteFlare','hubLabels','autoScaleLargeVaults'].forEach(id => {
   document.getElementById(id).addEventListener('change', e => save({ [id]: e.target.checked }));
 });
+
+document.getElementById('motionMode').addEventListener('change', e => save({ motionMode: e.target.value }));
 
 // Sliders
 document.getElementById('linkOpacity').addEventListener('input', e => {
@@ -329,6 +398,11 @@ document.getElementById('particleDensity').addEventListener('input', e => {
   document.getElementById('particleDensityVal').textContent = (e.target.value / 100).toFixed(2);
 });
 document.getElementById('particleDensity').addEventListener('change', e => save({ particleDensity: e.target.value / 100 }));
+
+document.getElementById('labelMinImportance').addEventListener('input', e => {
+  document.getElementById('labelMinImportanceVal').textContent = (e.target.value / 100).toFixed(2);
+});
+document.getElementById('labelMinImportance').addEventListener('change', e => save({ labelMinImportance: e.target.value / 100 }));
 
 // Numbers
 document.getElementById('hubLabelCount').addEventListener('change', e => {

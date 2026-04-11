@@ -20,35 +20,408 @@ const DEFAULTS = {
   particles: true,
   particleSpeed: 1,
   particleDensity: 0.3,
+  motionMode: 'balanced',
   clusterByTag: true,
+  clusterHalos: true,
   backgroundGradient: true,
   hubLabels: false,
   hubLabelCount: 5,
+  labelMinImportance: 0.22,
   edgeColoring: true,
   depthOfField: true,
-  noteFlare: true
+  noteFlare: true,
+  autoScaleLargeVaults: true
 };
-let cfg = {...DEFAULTS};
-let sim, nodes=[], links=[], lastHash='';
+
+const MOTION_PROFILES = {
+  light: { driftAmp: 0.4, phaseSpeed: 0.008, pulseSpeed: 0.012, particleSpawnEvery: 6, particleBurst: 3, particleAlpha: 0.78 },
+  balanced: { driftAmp: 0.75, phaseSpeed: 0.013, pulseSpeed: 0.017, particleSpawnEvery: 4, particleBurst: 5, particleAlpha: 0.92 },
+  showcase: { driftAmp: 1.2, phaseSpeed: 0.018, pulseSpeed: 0.024, particleSpawnEvery: 2, particleBurst: 8, particleAlpha: 1 }
+};
+
+const MAX_PARTICLES = 600;
+
+let cfg = { ...DEFAULTS };
+let sim;
+let nodes = [];
+let links = [];
+let lastHash = '';
 let maxDeg = 1;
 let tick = 0;
 let prevNodeIds = new Set();
-
-// --- Particle system ---
 let particlePool = [];
-const MAX_PARTICLES = 600;
+let sceneTuning = buildSceneTuning();
+let graphTimer = null;
+let framePoints = new Map();
+
+function finiteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function hasPoint(node) {
+  return finiteNumber(node?.x) && finiteNumber(node?.y);
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeConfig(data) {
+  const next = { ...DEFAULTS, ...(isPlainObject(data) ? data : {}) };
+  next.motionMode = MOTION_PROFILES[next.motionMode] ? next.motionMode : DEFAULTS.motionMode;
+  next.tagColors = isPlainObject(next.tagColors) ? next.tagColors : {};
+  return next;
+}
+
+function currentMotionProfile() {
+  return MOTION_PROFILES[cfg.motionMode] || MOTION_PROFILES.balanced;
+}
+
+function buildSceneTuning() {
+  const nodeCount = nodes.length;
+  const linkCount = links.length;
+  const dense = nodeCount > 350 || linkCount > 1200;
+  const huge = nodeCount > 900 || linkCount > 3200;
+  const motion = currentMotionProfile();
+
+  if (!cfg.autoScaleLargeVaults) {
+    return {
+      motion,
+      dense,
+      huge,
+      particlesEnabled: cfg.particles,
+      particleDensity: cfg.particleDensity,
+      particleCap: MAX_PARTICLES,
+      linkStep: 1,
+      labelCount: cfg.hubLabelCount,
+      labelMinImportance: cfg.labelMinImportance,
+      glowScale: 1,
+      linkOpacityScale: 1,
+      haloAlpha: cfg.clusterHalos ? 0.11 : 0,
+      haloRadiusBoost: 1
+    };
+  }
+
+  return {
+    motion,
+    dense,
+    huge,
+    particlesEnabled: cfg.particles && !(huge && linkCount > 5000),
+    particleDensity: huge ? cfg.particleDensity * 0.18 : dense ? cfg.particleDensity * 0.55 : cfg.particleDensity,
+    particleCap: huge ? 120 : dense ? 260 : MAX_PARTICLES,
+    linkStep: huge ? 4 : linkCount > 1800 ? 2 : 1,
+    labelCount: huge ? Math.min(cfg.hubLabelCount, 4) : dense ? Math.min(cfg.hubLabelCount, 6) : cfg.hubLabelCount,
+    labelMinImportance: Math.max(cfg.labelMinImportance, huge ? 0.42 : dense ? 0.28 : 0),
+    glowScale: huge ? 0.82 : dense ? 0.92 : 1,
+    linkOpacityScale: huge ? 0.78 : dense ? 0.9 : 1,
+    haloAlpha: cfg.clusterHalos ? (huge ? 0.05 : dense ? 0.08 : 0.11) : 0,
+    haloRadiusBoost: huge ? 0.85 : dense ? 0.95 : 1
+  };
+}
+
+function refreshSceneTuning() {
+  sceneTuning = buildSceneTuning();
+  particlePool = particlePool.slice(0, sceneTuning.particleCap);
+}
+
+function applyBackground() {
+  document.body.style.background = cfg.background;
+}
+
+function resize() {
+  canvas.width = innerWidth * DPR;
+  canvas.height = innerHeight * DPR;
+  canvas.style.width = innerWidth + 'px';
+  canvas.style.height = innerHeight + 'px';
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.scale(DPR, DPR);
+}
+
+resize();
+addEventListener('resize', resize);
+
+function hexToRGB(h) {
+  const n = parseInt(h.slice(1), 16);
+  return [n >> 16 & 255, n >> 8 & 255, n & 255];
+}
+
+function rgba(r, g, b, a) {
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+function hex2rgba(h, a) {
+  const [r, g, b] = hexToRGB(h);
+  return rgba(r, g, b, a);
+}
+
+function mixChannel(a, b, amount) {
+  return Math.round(a * (1 - amount) + b * amount);
+}
+
+function nodeColor(node) {
+  return (node.tag && cfg.tagColors[node.tag]) || cfg.accent;
+}
+
+function edgeColor(link) {
+  if (cfg.edgeColoring) {
+    const sourceColor = link.source.tag && cfg.tagColors[link.source.tag];
+    const targetColor = link.target.tag && cfg.tagColors[link.target.tag];
+    if (sourceColor) return sourceColor;
+    if (targetColor) return targetColor;
+  }
+  return cfg.accent;
+}
+
+function displayPoint(node) {
+  if (!hasPoint(node)) return null;
+  const motion = sceneTuning.motion;
+  const importance = 0.4 + (node.importance || 0) * 0.8;
+  const xOffset = Math.sin(tick * motion.phaseSpeed + node.id.length * 0.37 + node.x * 0.002) * motion.driftAmp * importance;
+  const yOffset = Math.cos(tick * motion.phaseSpeed * 0.82 + node.id.length * 0.53 + node.y * 0.002) * motion.driftAmp * importance;
+  return { x: node.x + xOffset, y: node.y + yOffset };
+}
+
+function buildFramePoints() {
+  framePoints = new Map();
+  for (const node of nodes) {
+    framePoints.set(node.id, displayPoint(node));
+  }
+}
+
+function framePoint(node) {
+  if (!node) return null;
+  return framePoints.get(node.id) || null;
+}
+
+function distFromCenterPoint(x, y) {
+  const dx = x - innerWidth / 2;
+  const dy = y - innerHeight / 2;
+  const maxDist = Math.sqrt(innerWidth * innerWidth + innerHeight * innerHeight) / 2;
+  return Math.sqrt(dx * dx + dy * dy) / maxDist;
+}
+
+function roundedRectPath(x, y, w, h, r) {
+  const radius = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.lineTo(x + w - radius, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+  ctx.lineTo(x + w, y + h - radius);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+  ctx.lineTo(x + radius, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+  ctx.lineTo(x, y + radius);
+  ctx.quadraticCurveTo(x, y, x + radius, y);
+}
+
+function truncateLabel(text, maxLength) {
+  return text.length > maxLength ? text.slice(0, maxLength - 1) + '…' : text;
+}
+
+async function loadJson(pathname) {
+  try {
+    const response = await fetch(`${pathname}?${Date.now()}`);
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (error) {
+    return new Promise(resolve => {
+      try {
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', pathname, true);
+        xhr.onload = () => {
+          try {
+            resolve(JSON.parse(xhr.responseText));
+          } catch (parseError) {
+            resolve(null);
+          }
+        };
+        xhr.onerror = () => resolve(null);
+        xhr.send();
+      } catch (xhrError) {
+        resolve(null);
+      }
+    });
+  }
+}
+
+async function loadCfg() {
+  const data = await loadJson('/api/config');
+  if (data) {
+    cfg = normalizeConfig(data);
+  } else {
+    console.warn('config API not available, using defaults');
+  }
+  applyBackground();
+  refreshSceneTuning();
+}
+
+function forceCluster(alpha) {
+  if (!cfg.clusterByTag) return;
+  const centroids = {};
+  const counts = {};
+  nodes.forEach(node => {
+    if (!node.tag || !hasPoint(node)) return;
+    if (!centroids[node.tag]) {
+      centroids[node.tag] = { x: 0, y: 0 };
+      counts[node.tag] = 0;
+    }
+    centroids[node.tag].x += node.x;
+    centroids[node.tag].y += node.y;
+    counts[node.tag] += 1;
+  });
+  for (const tag in centroids) {
+    centroids[tag].x /= counts[tag];
+    centroids[tag].y /= counts[tag];
+  }
+  const strength = 0.03 * alpha;
+  nodes.forEach(node => {
+    if (!node.tag || !centroids[node.tag] || !hasPoint(node)) return;
+    node.vx = finiteNumber(node.vx) ? node.vx : 0;
+    node.vy = finiteNumber(node.vy) ? node.vy : 0;
+    node.vx += (centroids[node.tag].x - node.x) * strength;
+    node.vy += (centroids[node.tag].y - node.y) * strength;
+  });
+}
+
+function graphHash(graph) {
+  const nodePart = graph.nodes
+    .map(node => `${node.id}|${node.tag || ''}`)
+    .sort()
+    .join('\n');
+  const linkPart = graph.links
+    .map(link => {
+      const source = typeof link.source === 'string' ? link.source : link.source?.id;
+      const target = typeof link.target === 'string' ? link.target : link.target?.id;
+      return `${source || ''}->${target || ''}`;
+    })
+    .sort()
+    .join('\n');
+  return `${nodePart}\n---\n${linkPart}`;
+}
+
+function randomPosition(spread) {
+  return {
+    x: innerWidth / 2 + (Math.random() - 0.5) * spread,
+    y: innerHeight / 2 + (Math.random() - 0.5) * spread
+  };
+}
+
+async function loadGraph() {
+  try {
+    const graph = await loadJson('graph.json');
+    if (!graph?.nodes || !graph?.links) return;
+    const hash = graphHash(graph);
+    if (hash === lastHash) return;
+    lastHash = hash;
+
+    const newIds = new Set(graph.nodes.map(node => node.id));
+    detectNewNodes(newIds);
+
+    const previousNodes = new Map(nodes.map(node => [node.id, node]));
+    const spread = Math.min(innerWidth, innerHeight) * 0.4;
+    nodes = graph.nodes.map(node => {
+      const previous = previousNodes.get(node.id);
+      const fallback = randomPosition(spread);
+      return previous
+        ? Object.assign(previous, {
+            tag: node.tag,
+            x: finiteNumber(previous.x) ? previous.x : fallback.x,
+            y: finiteNumber(previous.y) ? previous.y : fallback.y,
+            vx: finiteNumber(previous.vx) ? previous.vx : 0,
+            vy: finiteNumber(previous.vy) ? previous.vy : 0
+          })
+        : { ...node, ...fallback, vx: 0, vy: 0 };
+    });
+    links = graph.links;
+    particlePool = particlePool.filter(particle => {
+      const source = particle.link?.source?.id || particle.link?.source;
+      const target = particle.link?.target?.id || particle.link?.target;
+      return newIds.has(source) && newIds.has(target);
+    });
+
+    const degree = {};
+    links.forEach(link => {
+      degree[link.source] = (degree[link.source] || 0) + 1;
+      degree[link.target] = (degree[link.target] || 0) + 1;
+    });
+    maxDeg = Math.max(1, ...Object.values(degree));
+    nodes.forEach(node => {
+      const degreeCount = degree[node.id] || 0;
+      node.deg = degreeCount;
+      node.r = 2.2 + Math.sqrt(degreeCount) * 1.45;
+      node.importance = Math.min(1, degreeCount / maxDeg);
+    });
+
+    refreshSceneTuning();
+
+    if (sim) sim.stop();
+    const count = nodes.length;
+    const charge = count > 600 ? -10 : count > 200 ? -15 : count > 50 ? -25 : -30;
+    const distance = count > 600 ? 24 : count > 200 ? 30 : 40;
+    sim = d3.forceSimulation(nodes)
+      .force('link', d3.forceLink(links).id(node => node.id).distance(distance).strength(0.3))
+      .force('charge', d3.forceManyBody().strength(charge))
+      .force('center', d3.forceCenter(innerWidth / 2, innerHeight / 2))
+      .force('collide', d3.forceCollide().radius(node => node.r + 2))
+      .alphaDecay(count > 600 ? 0.03 : 0.02)
+      .velocityDecay(count > 600 ? 0.68 : 0.6)
+      .on('tick', () => {
+        forceCluster(sim.alpha());
+      });
+  } catch (error) {
+    console.warn('load failed:', error.message);
+  }
+}
+
+function detectNewNodes(newIds) {
+  if (prevNodeIds.size === 0) {
+    prevNodeIds = newIds;
+    return;
+  }
+  for (const id of newIds) {
+    if (!prevNodeIds.has(id)) {
+      flares.set(id, { start: tick, duration: 90 });
+    }
+  }
+  for (const id of flares.keys()) {
+    if (!newIds.has(id)) flares.delete(id);
+  }
+  prevNodeIds = newIds;
+}
+
+const flares = new Map();
+
+function getFlareIntensity(nodeId) {
+  if (!cfg.noteFlare || !flares.has(nodeId)) return 0;
+  const flare = flares.get(nodeId);
+  const age = tick - flare.start;
+  if (age > flare.duration) {
+    flares.delete(nodeId);
+    return 0;
+  }
+  const t = age / flare.duration;
+  return t < 0.15 ? t / 0.15 : 1 - ((t - 0.15) / 0.85);
+}
 
 function spawnParticles() {
-  if (!cfg.particles || links.length === 0) return;
-  const count = Math.max(1, Math.floor(links.length * cfg.particleDensity * 0.05));
-  for (let i = 0; i < count && particlePool.length < MAX_PARTICLES; i++) {
-    const l = links[Math.floor(Math.random() * links.length)];
-    if (!l.source?.x) continue;
+  if (!sceneTuning.particlesEnabled || links.length === 0) return;
+  const count = Math.min(
+    sceneTuning.motion.particleBurst,
+    Math.max(1, Math.floor(links.length * sceneTuning.particleDensity * 0.008))
+  );
+  for (let i = 0; i < count && particlePool.length < sceneTuning.particleCap; i++) {
+    const link = links[Math.floor(Math.random() * links.length)];
+    if (!hasPoint(link.source) || !hasPoint(link.target)) continue;
     particlePool.push({
-      link: l,
+      link,
       t: 0,
       speed: (0.003 + Math.random() * 0.004) * cfg.particleSpeed,
-      alpha: 0.3 + Math.random() * 0.4
+      alpha: (0.28 + Math.random() * 0.35) * sceneTuning.motion.particleAlpha,
+      size: 0.9 + Math.random() * 1.1
     });
   }
 }
@@ -61,287 +434,165 @@ function updateParticles() {
 }
 
 function drawParticles() {
-  if (!cfg.particles) return;
-  particlePool.forEach(p => {
-    const l = p.link;
-    if (!l.source?.x) return;
-    const x = l.source.x + (l.target.x - l.source.x) * p.t;
-    const y = l.source.y + (l.target.y - l.source.y) * p.t;
-    const c = cfg.edgeColoring ? edgeColor(l) : cfg.accent;
-    const [r,g,b] = hexToRGB(c);
-    // Fade in and out
-    const fade = p.t < 0.1 ? p.t / 0.1 : p.t > 0.9 ? (1 - p.t) / 0.1 : 1;
+  if (!sceneTuning.particlesEnabled) return;
+  particlePool.forEach(particle => {
+    const source = framePoint(particle.link.source);
+    const target = framePoint(particle.link.target);
+    if (!source || !target) return;
+    const x = source.x + (target.x - source.x) * particle.t;
+    const y = source.y + (target.y - source.y) * particle.t;
+    if (!finiteNumber(x) || !finiteNumber(y)) return;
+    const color = cfg.edgeColoring ? edgeColor(particle.link) : cfg.accent;
+    const [r, g, b] = hexToRGB(color);
+    const fade = particle.t < 0.1 ? particle.t / 0.1 : particle.t > 0.88 ? (1 - particle.t) / 0.12 : 1;
     ctx.beginPath();
-    ctx.arc(x, y, 1.2, 0, Math.PI * 2);
-    ctx.fillStyle = rgba(r, g, b, p.alpha * fade);
+    ctx.arc(x, y, particle.size, 0, Math.PI * 2);
+    ctx.fillStyle = rgba(r, g, b, particle.alpha * fade);
     ctx.fill();
   });
 }
 
-// --- Flare system ---
-let flares = new Map(); // nodeId -> { start: tick, duration: 60 }
-
-function detectNewNodes(newIds) {
-  if (prevNodeIds.size === 0) { prevNodeIds = newIds; return; }
-  for (const id of newIds) {
-    if (!prevNodeIds.has(id)) {
-      flares.set(id, { start: tick, duration: 90 });
-    }
-  }
-  prevNodeIds = newIds;
-}
-
-function getFlareIntensity(nodeId) {
-  if (!cfg.noteFlare || !flares.has(nodeId)) return 0;
-  const f = flares.get(nodeId);
-  const age = tick - f.start;
-  if (age > f.duration) { flares.delete(nodeId); return 0; }
-  // Quick flash up, slow fade
-  const t = age / f.duration;
-  return t < 0.15 ? t / 0.15 : 1 - ((t - 0.15) / 0.85);
-}
-
-// --- Helpers ---
-function applyBackground(){ document.body.style.background = cfg.background; }
-
-function resize(){
-  canvas.width=innerWidth*DPR; canvas.height=innerHeight*DPR;
-  canvas.style.width=innerWidth+'px'; canvas.style.height=innerHeight+'px';
-  ctx.setTransform(1,0,0,1,0,0); ctx.scale(DPR,DPR);
-}
-resize(); addEventListener('resize',resize);
-
-function hexToRGB(h){const n=parseInt(h.slice(1),16);return [n>>16&255,n>>8&255,n&255];}
-function rgba(r,g,b,a){return `rgba(${r},${g},${b},${a})`;}
-function hex2rgba(h,a){const [r,g,b]=hexToRGB(h);return rgba(r,g,b,a);}
-
-function nodeColor(n){ return (n.tag && cfg.tagColors[n.tag]) || cfg.accent; }
-function edgeColor(l){
-  if (cfg.edgeColoring) {
-    const sc = l.source.tag && cfg.tagColors[l.source.tag];
-    const tc = l.target.tag && cfg.tagColors[l.target.tag];
-    if (sc) return sc;
-    if (tc) return tc;
-  }
-  return cfg.accent;
-}
-
-function distFromCenter(n) {
-  const dx = n.x - innerWidth / 2;
-  const dy = n.y - innerHeight / 2;
-  const maxDist = Math.sqrt(innerWidth * innerWidth + innerHeight * innerHeight) / 2;
-  return Math.sqrt(dx * dx + dy * dy) / maxDist;
-}
-
-async function loadFile(name){
-  try {
-    const r = await fetch(name+'?'+Date.now());
-    if (!r.ok) return null;
-    return await r.json();
-  } catch(e){
-    return new Promise(resolve => {
-      try {
-        const xhr = new XMLHttpRequest();
-        xhr.open('GET', name, true);
-        xhr.onload = () => { try { resolve(JSON.parse(xhr.responseText)); } catch(e) { resolve(null); } };
-        xhr.onerror = () => resolve(null);
-        xhr.send();
-      } catch(e) { resolve(null); }
-    });
-  }
-}
-
-async function loadCfg(){
-  const data = await loadFile('config.json');
-  if (data) {
-    cfg = {...DEFAULTS, ...data};
-  } else {
-    console.warn('config.json not found or invalid, using defaults');
-  }
-  applyBackground();
-}
-
-// --- Tag cluster force ---
-function forceCluster(alpha) {
-  if (!cfg.clusterByTag) return;
-  // Compute tag centroids
-  const centroids = {};
-  const counts = {};
-  nodes.forEach(n => {
-    if (!n.tag) return;
-    if (!centroids[n.tag]) { centroids[n.tag] = { x: 0, y: 0 }; counts[n.tag] = 0; }
-    centroids[n.tag].x += n.x;
-    centroids[n.tag].y += n.y;
-    counts[n.tag]++;
-  });
-  for (const tag in centroids) {
-    centroids[tag].x /= counts[tag];
-    centroids[tag].y /= counts[tag];
-  }
-  // Pull nodes toward their tag centroid
-  const strength = 0.03 * alpha;
-  nodes.forEach(n => {
-    if (!n.tag || !centroids[n.tag]) return;
-    n.vx += (centroids[n.tag].x - n.x) * strength;
-    n.vy += (centroids[n.tag].y - n.y) * strength;
-  });
-}
-
-async function load(){
-  try {
-    const d = await loadFile('graph.json');
-    if (!d?.nodes || !d?.links) return;
-    const h = JSON.stringify(d.nodes.map(n=>n.id+'|'+(n.tag||'')).sort());
-    if (h===lastHash) return; lastHash=h;
-
-    const newIds = new Set(d.nodes.map(n => n.id));
-    detectNewNodes(newIds);
-
-    const map = new Map(nodes.map(n=>[n.id,n]));
-    const spread = Math.min(innerWidth, innerHeight) * 0.4;
-    nodes = d.nodes.map(n=>{
-      const prev = map.get(n.id);
-      return prev ? Object.assign(prev, {tag:n.tag}) : {...n, x:innerWidth/2+(Math.random()-.5)*spread, y:innerHeight/2+(Math.random()-.5)*spread};
-    });
-    links = d.links;
-    const deg={}; links.forEach(l=>{deg[l.source]=(deg[l.source]||0)+1;deg[l.target]=(deg[l.target]||0)+1;});
-    maxDeg = Math.max(1, ...Object.values(deg));
-    nodes.forEach(n=>{
-      const d = deg[n.id]||0;
-      n.deg = d;
-      n.r = 2 + Math.sqrt(d) * 1.5;
-      n.importance = Math.min(1, d / maxDeg);
-    });
-    if (sim) sim.stop();
-    const count = nodes.length;
-    const charge = count > 200 ? -15 : count > 50 ? -25 : -30;
-    const dist = count > 200 ? 30 : 40;
-    sim = d3.forceSimulation(nodes)
-      .force('link', d3.forceLink(links).id(d=>d.id).distance(dist).strength(0.3))
-      .force('charge', d3.forceManyBody().strength(charge))
-      .force('center', d3.forceCenter(innerWidth/2, innerHeight/2))
-      .force('collide', d3.forceCollide().radius(d=>d.r+2))
-      .alphaDecay(0.02).velocityDecay(0.6).on('tick', () => {
-        forceCluster(sim.alpha());
-        draw();
+function buildClusterHalos() {
+  if (sceneTuning.haloAlpha <= 0) return [];
+  const clusters = new Map();
+  nodes.forEach(node => {
+    if (!node.tag) return;
+    const point = framePoint(node);
+    if (!point) return;
+    if (!clusters.has(node.tag)) {
+      clusters.set(node.tag, {
+        tag: node.tag,
+        color: nodeColor(node),
+        count: 0,
+        sumX: 0,
+        sumY: 0,
+        minX: point.x,
+        maxX: point.x,
+        minY: point.y,
+        maxY: point.y
       });
-  } catch(e){ console.warn('load failed:', e.message); }
-}
-
-// Ambient breathing
-function breathe(){
-  tick++;
-  spawnParticles();
-  updateParticles();
-  if (sim && sim.alpha() < 0.01) {
-    nodes.forEach(n => {
-      const phase = tick * 0.003 + n.x * 0.001 + n.y * 0.001;
-      n.vx += Math.sin(phase) * 0.02;
-      n.vy += Math.cos(phase * 0.7) * 0.02;
-    });
-    sim.alpha(0.008);
-    sim.restart();
-  }
-  requestAnimationFrame(breathe);
+    }
+    const cluster = clusters.get(node.tag);
+    cluster.count += 1;
+    cluster.sumX += point.x;
+    cluster.sumY += point.y;
+    cluster.minX = Math.min(cluster.minX, point.x);
+    cluster.maxX = Math.max(cluster.maxX, point.x);
+    cluster.minY = Math.min(cluster.minY, point.y);
+    cluster.maxY = Math.max(cluster.maxY, point.y);
+  });
+  return Array.from(clusters.values())
+    .filter(cluster => cluster.count >= 3)
+    .map(cluster => {
+      const centerX = cluster.sumX / cluster.count;
+      const centerY = cluster.sumY / cluster.count;
+      const width = cluster.maxX - cluster.minX;
+      const height = cluster.maxY - cluster.minY;
+      const radius = Math.max(56, (Math.max(width, height) * 0.72 + Math.sqrt(cluster.count) * 22) * sceneTuning.haloRadiusBoost);
+      return { ...cluster, x: centerX, y: centerY, radius };
+    })
+    .sort((a, b) => a.radius - b.radius);
 }
 
 function drawBackgroundGradient() {
   if (!cfg.backgroundGradient) return;
   const [br, bg, bb] = hexToRGB(cfg.background);
   const [ar, ag, ab] = hexToRGB(cfg.accent);
-  const cx = innerWidth / 2, cy = innerHeight / 2;
-  const radius = Math.max(innerWidth, innerHeight) * 0.7;
-  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
-  // Subtle accent tint at center, fading to background
-  g.addColorStop(0, rgba(
-    Math.floor(br * 0.85 + ar * 0.15),
-    Math.floor(bg * 0.85 + ag * 0.15),
-    Math.floor(bb * 0.85 + ab * 0.15),
+  const cx = innerWidth / 2;
+  const cy = innerHeight / 2;
+  const radius = Math.max(innerWidth, innerHeight) * 0.72;
+  const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+  gradient.addColorStop(0, rgba(
+    mixChannel(br, ar, 0.15),
+    mixChannel(bg, ag, 0.15),
+    mixChannel(bb, ab, 0.15),
     1
   ));
-  g.addColorStop(0.5, rgba(br, bg, bb, 1));
-  g.addColorStop(1, rgba(
+  gradient.addColorStop(0.5, rgba(br, bg, bb, 1));
+  gradient.addColorStop(1, rgba(
     Math.max(0, br - 5),
     Math.max(0, bg - 5),
     Math.max(0, bb - 5),
     1
   ));
-  ctx.fillStyle = g;
+  ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, innerWidth, innerHeight);
 }
 
-function draw(){
-  ctx.clearRect(0,0,innerWidth,innerHeight);
-
-  // === Background gradient ===
-  drawBackgroundGradient();
-
-  // === Edges ===
-  links.forEach(l=>{
-    const sx=l.source.x, sy=l.source.y, tx=l.target.x, ty=l.target.y;
-    const imp = Math.max(l.source.importance||0, l.target.importance||0);
-    const alpha = cfg.linkOpacity * (0.3 + imp * 0.7);
-    const c = edgeColor(l);
-
-    // Depth of field on edges
-    let dofMult = 1;
-    if (cfg.depthOfField) {
-      const avgDist = (distFromCenter(l.source) + distFromCenter(l.target)) / 2;
-      dofMult = 1 - avgDist * 0.5;
-    }
-
-    ctx.strokeStyle = hex2rgba(c, alpha * dofMult);
-    ctx.lineWidth = (0.4 + imp * 0.6) * dofMult;
+function drawClusterHalos() {
+  for (const halo of buildClusterHalos()) {
+    const [r, g, b] = hexToRGB(halo.color);
+    const gradient = ctx.createRadialGradient(halo.x, halo.y, 0, halo.x, halo.y, halo.radius);
+    gradient.addColorStop(0, rgba(r, g, b, sceneTuning.haloAlpha));
+    gradient.addColorStop(0.55, rgba(r, g, b, sceneTuning.haloAlpha * 0.28));
+    gradient.addColorStop(1, rgba(r, g, b, 0));
+    ctx.fillStyle = gradient;
     ctx.beginPath();
-    ctx.moveTo(sx, sy);
-    ctx.lineTo(tx, ty);
-    ctx.stroke();
-  });
+    ctx.arc(halo.x, halo.y, halo.radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
 
-  // === Particles ===
-  drawParticles();
-
-  // === Nodes ===
-  // Sort: draw low-importance first, hubs on top
-  const sorted = [...nodes].sort((a, b) => (a.importance || 0) - (b.importance || 0));
-
-  sorted.forEach(n=>{
-    const c = nodeColor(n);
-    const [cr,cg,cb] = hexToRGB(c);
-    const imp = n.importance || 0;
-    const breathPhase = Math.sin(tick * 0.015 + n.x * 0.005) * 0.5 + 0.5;
-
-    // Depth of field
-    let dofScale = 1, dofAlpha = 1;
+function drawEdges() {
+  for (let i = 0; i < links.length; i += sceneTuning.linkStep) {
+    const link = links[i];
+    const source = framePoint(link.source);
+    const target = framePoint(link.target);
+    if (!source || !target) continue;
+    const importance = Math.max(link.source.importance || 0, link.target.importance || 0);
+    const alpha = cfg.linkOpacity * sceneTuning.linkOpacityScale * (0.3 + importance * 0.7);
+    const color = edgeColor(link);
+    let dofMultiplier = 1;
     if (cfg.depthOfField) {
-      const d = distFromCenter(n);
-      dofScale = 1 - d * 0.3;
-      dofAlpha = 1 - d * 0.4;
+      const avgDist = (distFromCenterPoint(source.x, source.y) + distFromCenterPoint(target.x, target.y)) / 2;
+      dofMultiplier = 1 - avgDist * 0.5;
     }
+    ctx.strokeStyle = hex2rgba(color, alpha * dofMultiplier);
+    ctx.lineWidth = (0.4 + importance * 0.6) * dofMultiplier;
+    ctx.beginPath();
+    ctx.moveTo(source.x, source.y);
+    ctx.lineTo(target.x, target.y);
+    ctx.stroke();
+  }
+}
 
-    // Flare
-    const flare = getFlareIntensity(n.id);
-    const r = n.r * dofScale;
+function drawNodes() {
+  const sorted = [...nodes].sort((a, b) => (a.importance || 0) - (b.importance || 0));
+  sorted.forEach(node => {
+    const point = framePoint(node);
+    if (!point) return;
+    const color = nodeColor(node);
+    const [cr, cg, cb] = hexToRGB(color);
+    const importance = node.importance || 0;
+    const pulse = Math.sin(tick * sceneTuning.motion.pulseSpeed + node.x * 0.004 + node.y * 0.003) * 0.5 + 0.5;
+    let dofScale = 1;
+    let dofAlpha = 1;
+    if (cfg.depthOfField) {
+      const distance = distFromCenterPoint(point.x, point.y);
+      dofScale = 1 - distance * 0.3;
+      dofAlpha = 1 - distance * 0.4;
+    }
+    const flare = getFlareIntensity(node.id);
+    const radius = node.r * dofScale;
 
     if (cfg.nodeGlow) {
-      const glowR = r + 4 + imp * 12 + breathPhase * 2 + flare * 20;
-      const glowAlpha = (0.08 + imp * 0.15 + breathPhase * 0.03 + flare * 0.4) * dofAlpha;
-      const g = ctx.createRadialGradient(n.x, n.y, r * 0.5, n.x, n.y, glowR);
+      const glowRadius = (radius + 4 + importance * 12 + pulse * 2 + flare * 20) * sceneTuning.glowScale;
+      const glowAlpha = (0.08 + importance * 0.15 + pulse * 0.03 + flare * 0.4) * dofAlpha;
+      const gradient = ctx.createRadialGradient(point.x, point.y, radius * 0.5, point.x, point.y, glowRadius);
       const glowCr = flare > 0 ? Math.min(255, cr + Math.floor(flare * 150)) : cr;
       const glowCg = flare > 0 ? Math.min(255, cg + Math.floor(flare * 150)) : cg;
       const glowCb = flare > 0 ? Math.min(255, cb + Math.floor(flare * 150)) : cb;
-      g.addColorStop(0, rgba(glowCr, glowCg, glowCb, glowAlpha));
-      g.addColorStop(1, rgba(glowCr, glowCg, glowCb, 0));
+      gradient.addColorStop(0, rgba(glowCr, glowCg, glowCb, glowAlpha));
+      gradient.addColorStop(1, rgba(glowCr, glowCg, glowCb, 0));
       ctx.beginPath();
-      ctx.arc(n.x, n.y, glowR, 0, Math.PI * 2);
-      ctx.fillStyle = g;
+      ctx.arc(point.x, point.y, glowRadius, 0, Math.PI * 2);
+      ctx.fillStyle = gradient;
       ctx.fill();
     }
 
-    // Core
-    const coreAlpha = (0.55 + imp * 0.35 + breathPhase * 0.1 + flare * 0.4) * dofAlpha;
+    const coreAlpha = (0.55 + importance * 0.35 + pulse * 0.1 + flare * 0.4) * dofAlpha;
     ctx.beginPath();
-    ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+    ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
     ctx.fillStyle = rgba(
       Math.min(255, cr + Math.floor(flare * 200)),
       Math.min(255, cg + Math.floor(flare * 200)),
@@ -350,50 +601,115 @@ function draw(){
     );
     ctx.fill();
 
-    // Hot center dot for hub nodes
-    if (imp > 0.3 || flare > 0) {
-      const dotR = r * 0.4;
+    if (importance > 0.3 || flare > 0) {
       ctx.beginPath();
-      ctx.arc(n.x, n.y, dotR, 0, Math.PI * 2);
+      ctx.arc(point.x, point.y, radius * 0.4, 0, Math.PI * 2);
       ctx.fillStyle = rgba(
         Math.min(255, cr + 80 + Math.floor(flare * 175)),
         Math.min(255, cg + 80 + Math.floor(flare * 175)),
         Math.min(255, cb + 80 + Math.floor(flare * 175)),
-        Math.min(1, (0.7 + breathPhase * 0.3) * dofAlpha)
+        Math.min(1, (0.7 + pulse * 0.3) * dofAlpha)
       );
       ctx.fill();
     }
   });
+}
 
-  // === Hub labels ===
-  if (cfg.hubLabels && cfg.hubLabelCount > 0) {
-    const hubs = [...nodes]
-      .sort((a, b) => (b.deg || 0) - (a.deg || 0))
-      .slice(0, cfg.hubLabelCount);
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    hubs.forEach(n => {
-      const c = nodeColor(n);
-      const [cr,cg,cb] = hexToRGB(c);
-      let dofAlpha = 1;
-      if (cfg.depthOfField) dofAlpha = 1 - distFromCenter(n) * 0.4;
-      const fontSize = Math.max(9, 10 + (n.importance || 0) * 4);
-      ctx.font = `${fontSize}px -apple-system, BlinkMacSystemFont, 'Inter', sans-serif`;
-      ctx.fillStyle = rgba(cr, cg, cb, 0.6 * dofAlpha);
-      ctx.fillText(n.id, n.x, n.y + n.r + 6);
-    });
+function drawLabels() {
+  if (!cfg.hubLabels || sceneTuning.labelCount <= 0) return;
+  const placed = [];
+  const candidates = [...nodes]
+    .filter(node => hasPoint(node) && (node.importance || 0) >= sceneTuning.labelMinImportance)
+    .sort((a, b) => (b.importance || 0) - (a.importance || 0))
+    .slice(0, sceneTuning.labelCount * 3);
+
+  let drawn = 0;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  for (const node of candidates) {
+    if (drawn >= sceneTuning.labelCount) break;
+    const point = framePoint(node);
+    if (!point) continue;
+    const distance = distFromCenterPoint(point.x, point.y);
+    const dofAlpha = cfg.depthOfField ? 1 - distance * 0.4 : 1;
+    if (dofAlpha <= 0.12) continue;
+
+    const label = truncateLabel(node.id, 28);
+    const fontSize = Math.max(10, 11 + (node.importance || 0) * 5);
+    ctx.font = `${fontSize}px -apple-system, BlinkMacSystemFont, 'Inter', sans-serif`;
+    const textWidth = ctx.measureText(label).width;
+    const x = point.x;
+    const y = point.y + node.r + 16;
+    const box = {
+      x: x - textWidth / 2 - 8,
+      y: y - fontSize / 2 - 5,
+      w: textWidth + 16,
+      h: fontSize + 10
+    };
+
+    if (box.x < 10 || box.x + box.w > innerWidth - 10 || box.y < 10 || box.y + box.h > innerHeight - 10) continue;
+    if (placed.some(other => !(box.x + box.w < other.x || other.x + other.w < box.x || box.y + box.h < other.y || other.y + other.h < box.y))) continue;
+
+    const [cr, cg, cb] = hexToRGB(nodeColor(node));
+    const [br, bg, bb] = hexToRGB(cfg.background);
+    roundedRectPath(box.x, box.y, box.w, box.h, 10);
+    ctx.fillStyle = rgba(
+      mixChannel(br, cr, 0.12),
+      mixChannel(bg, cg, 0.12),
+      mixChannel(bb, cb, 0.12),
+      0.72 * dofAlpha
+    );
+    ctx.fill();
+    ctx.strokeStyle = rgba(cr, cg, cb, 0.25 * dofAlpha);
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = rgba(245, 247, 255, 0.88 * dofAlpha);
+    ctx.fillText(label, x, y + 0.5);
+    placed.push(box);
+    drawn += 1;
   }
 }
 
+function draw() {
+  buildFramePoints();
+  ctx.clearRect(0, 0, innerWidth, innerHeight);
+  drawBackgroundGradient();
+  drawClusterHalos();
+  drawEdges();
+  drawParticles();
+  drawNodes();
+  drawLabels();
+}
+
+function refreshGraphTimer() {
+  if (graphTimer) clearInterval(graphTimer);
+  graphTimer = setInterval(loadGraph, cfg.refreshMs);
+}
+
+function breathe() {
+  tick += 1;
+  if (tick % sceneTuning.motion.particleSpawnEvery === 0) spawnParticles();
+  updateParticles();
+  draw();
+  requestAnimationFrame(breathe);
+}
+
 applyBackground();
-(async()=>{
-  await loadCfg(); await load();
+
+(async () => {
+  await loadCfg();
+  await loadGraph();
+  refreshGraphTimer();
   breathe();
-  setInterval(load, cfg.refreshMs);
-  setInterval(async()=>{
-    const prev = JSON.stringify(cfg);
+  setInterval(async () => {
+    const previous = JSON.stringify(cfg);
     await loadCfg();
-    if (JSON.stringify(cfg) !== prev) { lastHash=''; await load(); }
+    if (JSON.stringify(cfg) !== previous) {
+      refreshGraphTimer();
+      lastHash = '';
+      await loadGraph();
+    }
   }, 2000);
 })();
 </script></body></html>

@@ -1,16 +1,27 @@
 # Obsidian Live Wallpaper
 
-> Your knowledge graph, drifting quietly behind your desktop icons.
+> Turn your Obsidian vault into an ambient desktop scene instead of another hidden sidebar.
 
-![demo](docs/demo.gif)
+![Wallpaper preview](docs/wallpaper-preview.png)
 
-A tiny tool that turns your Obsidian vault's graph view into a live, animated desktop wallpaper. New notes appear within seconds of saving. Tag-based coloring, particle effects, hub glow, and 8 built-in themes — all configurable from a browser settings page.
+Obsidian Live Wallpaper turns your vault graph into a live desktop backdrop: glowing nodes, tag-colored clusters, curated visual presets, smarter hub labels, and motion that stays atmospheric instead of noisy. It is built to feel like wallpaper first, graph tooling second.
 
 **macOS and Windows.**
 
 ## Why
 
 The Obsidian graph view is beautiful and almost nobody looks at it, because it's buried two clicks deep inside the app. This project moves it to the one screen you actually stare at all day.
+
+## What It Looks Like
+
+The renderer is tuned for actual desktop use:
+
+- curated presets instead of raw sliders only
+- soft cluster halos for tag territories
+- smarter labels that surface hubs without clutter
+- large-vault-aware scaling so dense graphs stay elegant
+
+![Settings preview](docs/settings-preview.png)
 
 ## Install
 
@@ -32,12 +43,12 @@ Edit `config.json` and set `vaultPath` to your Obsidian vault. Then:
 npm start
 ```
 
-Point your wallpaper host to `http://localhost:3000`:
+Point your wallpaper host to `http://127.0.0.1:3000` (or `http://localhost:3000` on the same machine):
 
-- **Plash**: menu bar → **Add Website** → paste `http://localhost:3000`
-- **Lively**: click **+** → **Open URL** → paste `http://localhost:3000`
+- **Plash**: menu bar → **Add Website** → paste `http://127.0.0.1:3000`
+- **Lively**: click **+** → **Open URL** → paste `http://127.0.0.1:3000`
 
-Open `http://localhost:3000/settings.html` to customize everything.
+Open `http://127.0.0.1:3000/settings.html` to customize everything.
 
 For autostart and troubleshooting, see the platform-specific guides:
 - [`macos-setup.md`](macos-setup.md)
@@ -48,13 +59,13 @@ For autostart and troubleshooting, see the platform-specific guides:
 Three layers, each ignorant of the others:
 
 ```
-┌──────────┐    graph.json    ┌──────────┐  localhost:3000  ┌────────────┐
+┌──────────┐    graph.json    ┌──────────┐  127.0.0.1:3000  ┌────────────┐
 │  parser  │ ───────────────▶ │ renderer │ ───────────────▶ │ Plash /    │
 │ (Node)   │                  │  (d3)    │                  │ Lively     │
 └──────────┘                  └──────────┘                  └────────────┘
 ```
 
-1. **`parser.js`** watches your vault, parses `[[wikilinks]]` and tags from every `.md` file, writes `graph.json`, and serves everything on `localhost:3000`.
+1. **`parser.js`** watches your vault, parses `[[wikilinks]]` and tags from every `.md` file, writes `graph.json`, and serves everything on the local loopback interface (`127.0.0.1:3000` by default).
 2. **`index.html`** loads `graph.json`, runs a d3 force simulation on a fullscreen canvas, polls for updates.
 3. **Plash / Lively** renders the page as your desktop wallpaper.
 
@@ -62,22 +73,31 @@ The clean separation means only the host changes per platform.
 
 ## Configuration
 
-Edit `config.json` directly, or use the settings page at `http://localhost:3000/settings.html`.
+Edit `config.json` directly, or use the settings page at `http://127.0.0.1:3000/settings.html`.
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `vaultPath` | — | Absolute path to your Obsidian vault |
+| `port` | `3000` | Local HTTP port for the wallpaper server |
 | `accent` | `#7c5cff` | Default node and edge color |
 | `background` | `#0a0a0f` | Canvas background color |
 | `refreshMs` | `5000` | Polling interval in ms (increase for 2000+ notes) |
+| `linkOpacity` | `0.18` | Base opacity for graph edges |
 | `nodeGlow` | `true` | Radial glow halo around each node |
 | `particles` | `true` | Dots flowing along edges |
+| `particleSpeed` | `1` | Multiplier for particle travel speed |
+| `particleDensity` | `0.3` | Particle spawn density along links |
+| `motionMode` | `"balanced"` | Ambient movement profile: `light`, `balanced`, or `showcase` |
 | `clusterByTag` | `true` | Same-tag nodes gravitate together |
+| `clusterHalos` | `true` | Soft color fields behind major tag clusters |
 | `edgeColoring` | `true` | Edges inherit source node's tag color |
 | `backgroundGradient` | `true` | Subtle radial vignette with accent tint |
 | `depthOfField` | `true` | Peripheral nodes dimmer and smaller |
 | `noteFlare` | `true` | New notes flash white when they appear |
 | `hubLabels` | `false` | Show names on most-connected nodes |
+| `hubLabelCount` | `5` | Maximum number of node labels shown when `hubLabels` is on |
+| `labelMinImportance` | `0.22` | Minimum node importance required before labels appear |
+| `autoScaleLargeVaults` | `true` | Automatically reduces particles, labels, and edge density on dense graphs |
 | `tagColors` | `{}` | Map of Obsidian tag → hex color |
 
 ### Tag-based coloring
@@ -86,7 +106,11 @@ The parser reads the first tag from each note's frontmatter (`tags: [project, ..
 
 ### Presets
 
-The settings page includes 8 one-click themes: Default, Cyberpunk, Synthwave, Ember, Ocean, Forest, Monochrome, and Solar.
+The settings page includes curated one-click looks tuned for wallpaper use: Minimal, Ambient, Neon, Ember, Monochrome, and Galaxy.
+
+### Large vault scaling
+
+With `autoScaleLargeVaults` on, the renderer automatically trims edge density, particle count, and label noise as the graph gets denser. The goal is to keep the wallpaper atmospheric instead of turning into an unreadable tangle.
 
 ## License
 

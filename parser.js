@@ -4,35 +4,234 @@ const http = require('http');
 const chokidar = require('chokidar');
 
 const cfgPath = path.join(__dirname, 'config.json');
+const OUT = path.join(__dirname, 'graph.json');
+const DEFAULTS = {
+  accent: '#7c5cff',
+  background: '#0a0a0f',
+  refreshMs: 5000,
+  port: 3000,
+  linkOpacity: 0.18,
+  nodeGlow: true,
+  particles: true,
+  particleSpeed: 1,
+  particleDensity: 0.3,
+  motionMode: 'balanced',
+  clusterByTag: true,
+  clusterHalos: true,
+  backgroundGradient: true,
+  hubLabels: false,
+  hubLabelCount: 5,
+  labelMinImportance: 0.22,
+  edgeColoring: true,
+  depthOfField: true,
+  noteFlare: true,
+  autoScaleLargeVaults: true,
+  tagColors: {}
+};
+const PUBLIC_FILES = new Map([
+  ['/', path.join(__dirname, 'index.html')],
+  ['/index.html', path.join(__dirname, 'index.html')],
+  ['/settings.html', path.join(__dirname, 'settings.html')],
+  ['/graph.json', OUT]
+]);
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+const MOTION_MODES = new Set(['light', 'balanced', 'showcase']);
 if (!fs.existsSync(cfgPath)) {
   console.error('Missing config.json. Run: cp config.example.json config.json');
   process.exit(1);
 }
 
-let cfg;
-try {
-  cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-} catch (e) {
-  console.error('Invalid config.json:', e.message);
+function failConfig(message) {
+  console.error(`config.json: ${message}`);
   process.exit(1);
 }
 
-if (!cfg.vaultPath || typeof cfg.vaultPath !== 'string') {
-  console.error('config.json: vaultPath is required and must be a string');
-  process.exit(1);
-}
-if (!fs.existsSync(cfg.vaultPath)) {
-  console.error(`config.json: vaultPath does not exist: ${cfg.vaultPath}`);
-  process.exit(1);
+function requireString(value, key) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    failConfig(`${key} is required and must be a non-empty string`);
+  }
+  return value;
 }
 
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function validateHexColor(value, key) {
+  if (typeof value !== 'string' || !HEX_COLOR.test(value)) {
+    throw new Error(`${key} must be a 6-digit hex color like #7c5cff`);
+  }
+  return value;
+}
+
+function validateBoolean(value, key) {
+  if (typeof value !== 'boolean') {
+    throw new Error(`${key} must be a boolean`);
+  }
+  return value;
+}
+
+function validateEnum(value, key, allowed) {
+  if (typeof value !== 'string' || !allowed.has(value)) {
+    throw new Error(`${key} must be one of: ${Array.from(allowed).join(', ')}`);
+  }
+  return value;
+}
+
+function validateInteger(value, key, min, max) {
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${key} must be an integer between ${min} and ${max}`);
+  }
+  return value;
+}
+
+function validateNumber(value, key, min, max) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+    throw new Error(`${key} must be a number between ${min} and ${max}`);
+  }
+  return value;
+}
+
+function sanitizeTagColors(value) {
+  if (value === undefined) return { ...DEFAULTS.tagColors };
+  if (!isPlainObject(value)) {
+    throw new Error('tagColors must be an object of tag -> hex color');
+  }
+  const sanitized = {};
+  for (const [tag, color] of Object.entries(value)) {
+    if (typeof tag !== 'string' || tag.trim() === '') {
+      throw new Error('tagColors keys must be non-empty strings');
+    }
+    sanitized[tag] = validateHexColor(color, `tagColors.${tag}`);
+  }
+  return sanitized;
+}
+
+function sanitizePersistedConfig(raw) {
+  if (!isPlainObject(raw)) {
+    throw new Error('config root must be a JSON object');
+  }
+  const vaultPath = requireString(raw.vaultPath, 'vaultPath');
+  const next = {
+    vaultPath,
+    port: raw.port === undefined ? DEFAULTS.port : validateInteger(raw.port, 'port', 1, 65535),
+    accent: raw.accent === undefined ? DEFAULTS.accent : validateHexColor(raw.accent, 'accent'),
+    background: raw.background === undefined ? DEFAULTS.background : validateHexColor(raw.background, 'background'),
+    refreshMs: raw.refreshMs === undefined ? DEFAULTS.refreshMs : validateInteger(raw.refreshMs, 'refreshMs', 1000, 60000),
+    linkOpacity: raw.linkOpacity === undefined ? DEFAULTS.linkOpacity : validateNumber(raw.linkOpacity, 'linkOpacity', 0, 1),
+    nodeGlow: raw.nodeGlow === undefined ? DEFAULTS.nodeGlow : validateBoolean(raw.nodeGlow, 'nodeGlow'),
+    particles: raw.particles === undefined ? DEFAULTS.particles : validateBoolean(raw.particles, 'particles'),
+    particleSpeed: raw.particleSpeed === undefined ? DEFAULTS.particleSpeed : validateNumber(raw.particleSpeed, 'particleSpeed', 0.1, 3),
+    particleDensity: raw.particleDensity === undefined ? DEFAULTS.particleDensity : validateNumber(raw.particleDensity, 'particleDensity', 0.05, 1),
+    motionMode: raw.motionMode === undefined ? DEFAULTS.motionMode : validateEnum(raw.motionMode, 'motionMode', MOTION_MODES),
+    clusterByTag: raw.clusterByTag === undefined ? DEFAULTS.clusterByTag : validateBoolean(raw.clusterByTag, 'clusterByTag'),
+    clusterHalos: raw.clusterHalos === undefined ? DEFAULTS.clusterHalos : validateBoolean(raw.clusterHalos, 'clusterHalos'),
+    backgroundGradient: raw.backgroundGradient === undefined ? DEFAULTS.backgroundGradient : validateBoolean(raw.backgroundGradient, 'backgroundGradient'),
+    hubLabels: raw.hubLabels === undefined ? DEFAULTS.hubLabels : validateBoolean(raw.hubLabels, 'hubLabels'),
+    hubLabelCount: raw.hubLabelCount === undefined ? DEFAULTS.hubLabelCount : validateInteger(raw.hubLabelCount, 'hubLabelCount', 1, 50),
+    labelMinImportance: raw.labelMinImportance === undefined ? DEFAULTS.labelMinImportance : validateNumber(raw.labelMinImportance, 'labelMinImportance', 0, 1),
+    edgeColoring: raw.edgeColoring === undefined ? DEFAULTS.edgeColoring : validateBoolean(raw.edgeColoring, 'edgeColoring'),
+    depthOfField: raw.depthOfField === undefined ? DEFAULTS.depthOfField : validateBoolean(raw.depthOfField, 'depthOfField'),
+    noteFlare: raw.noteFlare === undefined ? DEFAULTS.noteFlare : validateBoolean(raw.noteFlare, 'noteFlare'),
+    autoScaleLargeVaults: raw.autoScaleLargeVaults === undefined ? DEFAULTS.autoScaleLargeVaults : validateBoolean(raw.autoScaleLargeVaults, 'autoScaleLargeVaults'),
+    tagColors: sanitizeTagColors(raw.tagColors)
+  };
+  if (!fs.existsSync(vaultPath)) {
+    throw new Error(`vaultPath does not exist: ${vaultPath}`);
+  }
+  return next;
+}
+
+function sanitizeConfigPatch(raw) {
+  if (!isPlainObject(raw)) {
+    throw new Error('request body must be a JSON object');
+  }
+  const allowed = new Set([
+    'accent',
+    'background',
+    'refreshMs',
+    'linkOpacity',
+    'nodeGlow',
+    'particles',
+    'particleSpeed',
+    'particleDensity',
+    'motionMode',
+    'clusterByTag',
+    'clusterHalos',
+    'backgroundGradient',
+    'hubLabels',
+    'hubLabelCount',
+    'labelMinImportance',
+    'edgeColoring',
+    'depthOfField',
+    'noteFlare',
+    'autoScaleLargeVaults',
+    'tagColors'
+  ]);
+  const patch = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (!allowed.has(key)) {
+      throw new Error(`unknown config key: ${key}`);
+    }
+    switch (key) {
+      case 'accent':
+      case 'background':
+        patch[key] = validateHexColor(value, key);
+        break;
+      case 'refreshMs':
+        patch[key] = validateInteger(value, key, 1000, 60000);
+        break;
+      case 'linkOpacity':
+        patch[key] = validateNumber(value, key, 0, 1);
+        break;
+      case 'particleSpeed':
+        patch[key] = validateNumber(value, key, 0.1, 3);
+        break;
+      case 'particleDensity':
+        patch[key] = validateNumber(value, key, 0.05, 1);
+        break;
+      case 'motionMode':
+        patch[key] = validateEnum(value, key, MOTION_MODES);
+        break;
+      case 'hubLabelCount':
+        patch[key] = validateInteger(value, key, 1, 50);
+        break;
+      case 'labelMinImportance':
+        patch[key] = validateNumber(value, key, 0, 1);
+        break;
+      case 'tagColors':
+        patch[key] = sanitizeTagColors(value);
+        break;
+      default:
+        patch[key] = validateBoolean(value, key);
+        break;
+    }
+  }
+  return patch;
+}
+
+function readConfigFile() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    return sanitizePersistedConfig(raw);
+  } catch (e) {
+    failConfig(e.message);
+  }
+}
+
+function writeConfigFile(nextCfg) {
+  const tmp = cfgPath + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(nextCfg, null, 2));
+  fs.renameSync(tmp, cfgPath);
+}
+
+let cfg = readConfigFile();
 const VAULT = cfg.vaultPath;
-const OUT = path.join(__dirname, 'graph.json');
-const PORT = cfg.port || 3000;
+const PORT = cfg.port;
 const WIKILINK = /\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g;
-const FRONTMATTER = /^---\n([\s\S]*?)\n---/;
+const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---/;
 const TAGS_FLOW = /^tags:\s*\[([^\]]*)\]/m;
-const TAGS_BLOCK = /^tags:\s*\n((?:\s*-\s+.+\n?)+)/m;
+const TAGS_BLOCK = /^tags:\s*\r?\n((?:\s*-\s+.+\r?\n?)+)/m;
 const TAGS_INLINE = /(?:^|\s)#([a-zA-Z][\w-/]*)/g;
 
 let discoveredTags = {};
@@ -146,26 +345,34 @@ function serveFile(res, filePath) {
   }
 }
 
-function readBody(req) {
+function readBody(req, res) {
   return new Promise((resolve, reject) => {
     let data = '';
-    req.on('data', c => { data += c; if (data.length > 1e6) req.destroy(); });
+    let tooLarge = false;
+    req.on('data', c => {
+      if (tooLarge) return;
+      data += c;
+      if (data.length > 1e6) {
+        tooLarge = true;
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'request body too large' }));
+        req.destroy();
+        reject(new Error('request body too large'));
+      }
+    });
     req.on('end', () => resolve(data));
     req.on('error', reject);
   });
 }
 
 const server = http.createServer(async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
-  const url = req.url.split('?')[0];
+  const requestUrl = new URL(req.url, 'http://127.0.0.1');
+  const url = requestUrl.pathname;
 
   if (url === '/api/config' && req.method === 'GET') {
-    const current = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-    const { vaultPath, port, ...safe } = current;
+    const { vaultPath, port, ...safe } = cfg;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(safe));
     return;
@@ -173,19 +380,19 @@ const server = http.createServer(async (req, res) => {
 
   if (url === '/api/config' && req.method === 'POST') {
     try {
-      const body = JSON.parse(await readBody(req));
-      const current = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-      const updated = { ...current, ...body };
-      // Never overwrite vaultPath or port from the UI
-      updated.vaultPath = current.vaultPath;
-      if (current.port) updated.port = current.port;
-      fs.writeFileSync(cfgPath, JSON.stringify(updated, null, 2));
+      const body = JSON.parse(await readBody(req, res));
+      const patch = sanitizeConfigPatch(body);
+      const updated = { ...cfg, ...patch, vaultPath: cfg.vaultPath, port: cfg.port };
+      writeConfigFile(updated);
+      cfg = updated;
       const { vaultPath, port, ...safe } = updated;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(safe));
     } catch (e) {
+      if (!res.writableEnded) {
       res.writeHead(400);
       res.end(JSON.stringify({ error: e.message }));
+      }
     }
     return;
   }
@@ -197,21 +404,43 @@ const server = http.createServer(async (req, res) => {
   }
 
   // Static files
-  let filePath = url === '/' ? '/index.html' : url;
-  serveFile(res, path.join(__dirname, filePath));
+  const filePath = PUBLIC_FILES.get(url);
+  if (!filePath) {
+    res.writeHead(404);
+    res.end('Not found');
+    return;
+  }
+  serveFile(res, filePath);
 });
 
 // --- Start ---
 
 build();
 
-chokidar.watch(VAULT, {
+const watcher = chokidar.watch(VAULT, {
   ignoreInitial: true,
   ignored: [/(^|[/\\])\./, /\.(?!md$)[^.]+$/],
   awaitWriteFinish: { stabilityThreshold: 300 }
-}).on('all', () => { try { build(); } catch (e) { console.error(e); } });
+});
 
-server.listen(PORT, () => {
-  console.log(`wallpaper:  http://localhost:${PORT}`);
-  console.log(`settings:   http://localhost:${PORT}/settings.html`);
+watcher
+  .on('all', () => {
+    try {
+      build();
+    } catch (e) {
+      console.error('build failed:', e);
+    }
+  })
+  .on('error', e => {
+    console.error('watcher error:', e.message);
+  });
+
+server.listen(PORT, '127.0.0.1', () => {
+  console.log(`wallpaper:  http://127.0.0.1:${PORT}`);
+  console.log(`settings:   http://127.0.0.1:${PORT}/settings.html`);
+});
+
+server.on('error', e => {
+  console.error(`server error: ${e.message}`);
+  process.exit(1);
 });

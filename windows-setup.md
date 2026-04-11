@@ -35,8 +35,8 @@ Keep this terminal open (or run it as a background service — see below).
 ## Set up Lively Wallpaper
 
 1. Open Lively Wallpaper.
-2. Click the **+** button → **Open File** → select `index.html` from the project folder.
-3. Lively will render it as your desktop wallpaper.
+2. Click the **+** button → **Open URL** → paste `http://127.0.0.1:3000`.
+3. Lively will render the local wallpaper server as your desktop wallpaper.
 
 ### Recommended Lively settings
 
@@ -68,7 +68,7 @@ pm2 startup
 ## Troubleshooting
 
 - **Blank wallpaper**: check that `graph.json` exists in the project folder. If not, the parser isn't running or `vaultPath` is wrong.
-- **Lively shows a white page**: make sure you selected the `index.html` file, not the folder. Try opening `index.html` in a browser first to verify it renders.
+- **Lively shows a white page**: make sure the parser is running and Lively is pointed at `http://127.0.0.1:3000`.
 - **Backslash paths not working**: use forward slashes (`C:/Users/...`) in `config.json` — Node.js handles them fine on Windows.
 - **Nodes not updating**: edit a note in Obsidian and check the parser terminal for output like `graph: 42 nodes, 87 links`.
 - **Performance**: if your vault is 2000+ notes, increase `refreshMs` to 10000 in `config.json`.

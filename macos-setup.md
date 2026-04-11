@@ -3,7 +3,7 @@
 ## Plash configuration
 
 1. Install [Plash](https://apps.apple.com/us/app/plash/id1494023538) from the Mac App Store.
-2. Plash menu bar → **Add Website** → paste `http://localhost:3000`.
+2. Plash menu bar → **Add Website** → paste `http://127.0.0.1:3000`.
 3. **Browsing Mode**: off (so clicks pass through to your desktop).
 4. **Opacity**: 100%. **Invert colors**: off.
 5. **Reload interval**: leave blank — the renderer polls on its own.
@@ -38,6 +38,6 @@ Find your node path first: run `which node` in Terminal and paste the result bel
 ## Troubleshooting
 
 - **Blank wallpaper**: check that `graph.json` exists in the project folder. If not, the parser isn't running or `vaultPath` is wrong.
-- **Plash shows "file not found"**: use the absolute path with `file:///` (three slashes). Drag the `index.html` into a browser first to verify.
+- **Plash shows "file not found"**: make sure the parser is running and the URL is `http://127.0.0.1:3000`, not a `file:///` path.
 - **Nodes not updating**: confirm chokidar is watching by editing a note and checking the parser's terminal output.
 - **Performance**: if your vault is 2000+ notes, increase `refreshMs` to 10000 in `config.json`.
