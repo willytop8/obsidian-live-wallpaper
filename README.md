@@ -2,6 +2,8 @@
 
 > Turn your Obsidian vault into an ambient desktop scene instead of another hidden sidebar.
 
+![Demo](docs/demo.gif)
+
 ![Style showcase](docs/style-showcase.png)
 
 Obsidian Live Wallpaper turns your vault graph into a live desktop backdrop: glowing nodes, tag-colored clusters, curated visual presets, smarter hub labels, and motion that stays atmospheric instead of noisy. It is built to feel like wallpaper first, graph tooling second.
