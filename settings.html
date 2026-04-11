@@ -102,6 +102,10 @@
     </div>
   </div>
   <div class="row">
+    <div><label>Unresolved links</label><div class="hint">Show ghost nodes for [[links]] to notes that don't exist yet</div></div>
+    <label class="toggle"><input type="checkbox" id="showUnresolvedLinks" checked><span class="slider"></span></label>
+  </div>
+  <div class="row">
     <div><label>Cluster by tag</label><div class="hint">Same-tag nodes gravitate together</div></div>
     <label class="toggle"><input type="checkbox" id="clusterByTag" checked><span class="slider"></span></label>
   </div>
@@ -259,6 +263,7 @@ function applyForm() {
   document.getElementById('background').value = cfg.background ?? '#0a0a0f';
   document.getElementById('nodeGlow').checked = cfg.nodeGlow !== false;
   document.getElementById('edgeColoring').checked = cfg.edgeColoring !== false;
+  document.getElementById('showUnresolvedLinks').checked = cfg.showUnresolvedLinks !== false;
   document.getElementById('clusterByTag').checked = cfg.clusterByTag !== false;
   document.getElementById('clusterHalos').checked = cfg.clusterHalos !== false;
   document.getElementById('linkOpacity').value = Math.round((cfg.linkOpacity ?? 0.18) * 100);
@@ -389,7 +394,7 @@ document.getElementById('accent').addEventListener('change', e => save({ accent:
 document.getElementById('background').addEventListener('change', e => save({ background: e.target.value }));
 
 // Toggles
-['nodeGlow','edgeColoring','clusterByTag','clusterHalos','particles','backgroundGradient','depthOfField','noteFlare','hubLabels','autoScaleLargeVaults'].forEach(id => {
+['nodeGlow','edgeColoring','showUnresolvedLinks','clusterByTag','clusterHalos','particles','backgroundGradient','depthOfField','noteFlare','hubLabels','autoScaleLargeVaults'].forEach(id => {
   document.getElementById(id).addEventListener('change', e => save({ [id]: e.target.checked }));
 });
 

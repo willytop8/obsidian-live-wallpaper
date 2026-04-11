@@ -120,7 +120,16 @@ The renderer ships with a local vendored copy of D3, so the wallpaper still work
 | `hubLabelCount` | `5` | Maximum number of node labels shown when `hubLabels` is on |
 | `labelMinImportance` | `0.22` | Minimum node importance required before labels appear |
 | `autoScaleLargeVaults` | `true` | Automatically reduces particles, labels, and edge density on dense graphs |
+| `showUnresolvedLinks` | `true` | Show ghost nodes for `[[links]]` to notes that don't exist yet |
 | `tagColors` | `{}` | Map of Obsidian tag → hex color |
+
+### Tags vs links
+
+Tags and links do different things in the wallpaper. **Links** (`[[wikilinks]]`) create **edges** between nodes — they define the graph structure. **Tags** (`#tag` in frontmatter or body) control **node color** and **clustering** — they're purely visual grouping. A note can have both, and they work independently.
+
+### Unresolved links
+
+With `showUnresolvedLinks` on (the default), any `[[wikilink]]` that points to a note that doesn't exist yet still appears in the graph as a dimmer, smaller "ghost" node. This lets you see the shape of your planned connections, not just what you've written so far. Turn it off if you only want real notes.
 
 ### Duplicate note names
 

@@ -26,6 +26,7 @@ const DEFAULTS = {
   depthOfField: true,
   noteFlare: true,
   autoScaleLargeVaults: true,
+  showUnresolvedLinks: true,
   tagColors: {}
 };
 const PUBLIC_FILES = new Map([
@@ -139,6 +140,7 @@ function sanitizePersistedConfig(raw) {
     depthOfField: raw.depthOfField === undefined ? DEFAULTS.depthOfField : validateBoolean(raw.depthOfField, 'depthOfField'),
     noteFlare: raw.noteFlare === undefined ? DEFAULTS.noteFlare : validateBoolean(raw.noteFlare, 'noteFlare'),
     autoScaleLargeVaults: raw.autoScaleLargeVaults === undefined ? DEFAULTS.autoScaleLargeVaults : validateBoolean(raw.autoScaleLargeVaults, 'autoScaleLargeVaults'),
+    showUnresolvedLinks: raw.showUnresolvedLinks === undefined ? DEFAULTS.showUnresolvedLinks : validateBoolean(raw.showUnresolvedLinks, 'showUnresolvedLinks'),
     tagColors: sanitizeTagColors(raw.tagColors)
   };
   if (!fs.existsSync(vaultPath)) {
@@ -171,6 +173,7 @@ function sanitizeConfigPatch(raw) {
     'depthOfField',
     'noteFlare',
     'autoScaleLargeVaults',
+    'showUnresolvedLinks',
     'tagColors'
   ]);
   const patch = {};
@@ -259,7 +262,8 @@ function extractTag(content) {
   return null;
 }
 
-function buildGraph(vaultPath, outPath = OUT) {
+function buildGraph(vaultPath, outPath = OUT, options = {}) {
+  const showUnresolved = options.showUnresolvedLinks !== undefined ? options.showUnresolvedLinks : DEFAULTS.showUnresolvedLinks;
   // First pass: collect every .md file and detect which basenames appear more than once
   const raw = [];
   const basenameCounts = {};
@@ -310,6 +314,7 @@ function buildGraph(vaultPath, outPath = OUT) {
   const nodeSet = new Set(nodes.map(n => n.id));
   const links = [];
   const linkSet = new Set();
+  const ghostIds = new Set();
   for (const [src, file] of Object.entries(files)) {
     WIKILINK.lastIndex = 0;
     let m;
@@ -317,6 +322,20 @@ function buildGraph(vaultPath, outPath = OUT) {
       const tgt = m[1].trim();
       // Resolve wikilink by basename — may match multiple IDs if duplicated
       const targetIds = basenameToIds[tgt] || (nodeSet.has(tgt) ? [tgt] : []);
+      if (targetIds.length === 0 && showUnresolved && tgt.length > 0) {
+        // Unresolved wikilink — create a ghost node
+        if (!ghostIds.has(tgt)) {
+          ghostIds.add(tgt);
+          nodes.push({ id: tgt, ghost: true });
+          nodeSet.add(tgt);
+        }
+        const key = src + '\0' + tgt;
+        if (!linkSet.has(key)) {
+          linkSet.add(key);
+          links.push({ source: src, target: tgt });
+        }
+        continue;
+      }
       for (const targetId of targetIds) {
         if (targetId === src) continue;
         const key = src + '\0' + targetId;
@@ -462,9 +481,11 @@ function startApp(options = {}) {
   const server = http.createServer(createRequestHandler(state));
 
   const rebuild = () => {
-    const result = buildGraph(state.cfg.vaultPath, state.outPath);
+    const result = buildGraph(state.cfg.vaultPath, state.outPath, { showUnresolvedLinks: state.cfg.showUnresolvedLinks });
     state.discoveredTags = result.discoveredTags;
-    console.log(`graph: ${result.nodes.length} nodes, ${result.links.length} links, ${result.tagged} tagged`);
+    const ghostCount = result.nodes.filter(n => n.ghost).length;
+    const ghostMsg = ghostCount > 0 ? `, ${ghostCount} unresolved` : '';
+    console.log(`graph: ${result.nodes.length} nodes, ${result.links.length} links, ${result.tagged} tagged${ghostMsg}`);
     return result;
   };
 

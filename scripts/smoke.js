@@ -176,11 +176,43 @@ async function runDuplicateBasenames(tmpRoot) {
   assert(stored.nodes.length === 3, 'expected graph.json to contain all 3 nodes');
 }
 
+async function runGhostNodes(tmpRoot) {
+  const vaultDir = path.join(tmpRoot, 'ghost-vault');
+  const outFile = path.join(tmpRoot, 'ghost-graph.json');
+
+  writeFile(path.join(vaultDir, 'Alpha.md'), '# Alpha\n\n[[Beta]]\n[[Nonexistent]]\n[[Also Missing]]\n');
+  writeFile(path.join(vaultDir, 'Beta.md'), '# Beta\n\n[[Nonexistent]]\n');
+
+  // With showUnresolvedLinks on
+  const withGhosts = buildGraph(vaultDir, outFile, { showUnresolvedLinks: true });
+  assert(withGhosts.nodes.length === 4, `expected 4 nodes (2 real + 2 ghost), got ${withGhosts.nodes.length}`);
+  const ghosts = withGhosts.nodes.filter(n => n.ghost);
+  assert(ghosts.length === 2, `expected 2 ghost nodes, got ${ghosts.length}`);
+  assert(ghosts.some(n => n.id === 'Nonexistent'), 'expected Nonexistent ghost node');
+  assert(ghosts.some(n => n.id === 'Also Missing'), 'expected Also Missing ghost node');
+
+  // Both Alpha and Beta link to Nonexistent
+  const toNonexistent = withGhosts.links.filter(l => l.target === 'Nonexistent');
+  assert(toNonexistent.length === 2, `expected 2 links to Nonexistent, got ${toNonexistent.length}`);
+
+  // Only Alpha links to Also Missing
+  const toAlsoMissing = withGhosts.links.filter(l => l.target === 'Also Missing');
+  assert(toAlsoMissing.length === 1, `expected 1 link to Also Missing, got ${toAlsoMissing.length}`);
+
+  // With showUnresolvedLinks off — no ghosts
+  const withoutGhosts = buildGraph(vaultDir, outFile, { showUnresolvedLinks: false });
+  assert(withoutGhosts.nodes.length === 2, `expected 2 nodes without ghosts, got ${withoutGhosts.nodes.length}`);
+  assert(withoutGhosts.nodes.every(n => !n.ghost), 'expected no ghost nodes when disabled');
+  // Only Alpha->Beta link (Beta has no real targets)
+  assert(withoutGhosts.links.length === 1, `expected 1 link without ghosts, got ${withoutGhosts.links.length}`);
+}
+
 async function main() {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'obsidian-live-wallpaper-smoke-'));
   try {
     await runHappyPath(tmpRoot);
     await runDuplicateBasenames(tmpRoot);
+    await runGhostNodes(tmpRoot);
     console.log('smoke: ok');
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
