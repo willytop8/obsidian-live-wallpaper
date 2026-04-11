@@ -128,7 +128,7 @@ The parser reads the first tag from each note's frontmatter (`tags: [project, ..
 
 ### Presets
 
-The settings page includes curated one-click looks tuned for wallpaper use: Classic, Minimal, Ambient, Neon, Ember, Monochrome, and Galaxy.
+The settings page includes curated one-click looks tuned for wallpaper use: Classic, Minimal, Ambient, Neon, Ember, Monochrome, Galaxy, and Embedded (designed for use as a background inside Obsidian via the Live Background plugin).
 
 ### Large vault scaling
 
