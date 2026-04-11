@@ -66,6 +66,10 @@ Point your wallpaper host to `http://127.0.0.1:3000` (examples below assume the 
 
 Open `http://127.0.0.1:3000/settings.html` to customize the visual settings. `vaultPath` and `port` stay in `config.json`.
 
+### Use it inside Obsidian
+
+You can also use the graph as a background inside Obsidian itself with the [Live Background](https://github.com/DynamicPlayerSector/obsidian-live-background) community plugin. Point it at `http://127.0.0.1:3000` and select the **Embedded** preset in the settings page — it's tuned to stay out of the way of your notes.
+
 For autostart and troubleshooting, see the platform-specific guides:
 - [`macos-setup.md`](macos-setup.md)
 - [`windows-setup.md`](windows-setup.md)
