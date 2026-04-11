@@ -51,7 +51,7 @@ Edit `config.json` and set `vaultPath` to your Obsidian vault. Then:
 npm start
 ```
 
-Point your wallpaper host to `http://127.0.0.1:3000` (or `http://localhost:3000` on the same machine):
+Point your wallpaper host to `http://127.0.0.1:3000` (examples below assume the default port — change if you set a different `port` in `config.json`):
 
 - **Plash**: menu bar → **Add Website** → paste `http://127.0.0.1:3000`
 - **Lively**: click **+** → **Open URL** → paste `http://127.0.0.1:3000`
@@ -81,7 +81,7 @@ The clean separation means only the host changes per platform.
 
 ## Configuration
 
-Edit `config.json` directly, or use the settings page at `http://127.0.0.1:3000/settings.html`.
+Edit `config.json` for `vaultPath` and `port`. For everything else, use the settings page at `http://127.0.0.1:3000/settings.html` or edit `config.json` directly.
 
 The renderer ships with a local vendored copy of D3, so the wallpaper still works offline after `npm install`.
 
