@@ -2,7 +2,7 @@
 
 > Turn your Obsidian vault into an ambient desktop scene instead of another hidden sidebar.
 
-![Wallpaper preview](docs/wallpaper-preview.png)
+![Style showcase](docs/style-showcase.png)
 
 Obsidian Live Wallpaper turns your vault graph into a live desktop backdrop: glowing nodes, tag-colored clusters, curated visual presets, smarter hub labels, and motion that stays atmospheric instead of noisy. It is built to feel like wallpaper first, graph tooling second.
 
@@ -20,6 +20,14 @@ The renderer is tuned for actual desktop use:
 - soft cluster halos for tag territories
 - smarter labels that surface hubs without clutter
 - large-vault-aware scaling so dense graphs stay elegant
+
+**Polished look**
+
+![Polished wallpaper preview](docs/wallpaper-preview.png)
+
+**Classic look**
+
+![Classic wallpaper preview](docs/classic-preview.png)
 
 ![Settings preview](docs/settings-preview.png)
 
@@ -106,7 +114,7 @@ The parser reads the first tag from each note's frontmatter (`tags: [project, ..
 
 ### Presets
 
-The settings page includes curated one-click looks tuned for wallpaper use: Minimal, Ambient, Neon, Ember, Monochrome, and Galaxy.
+The settings page includes curated one-click looks tuned for wallpaper use: Classic, Minimal, Ambient, Neon, Ember, Monochrome, and Galaxy.
 
 ### Large vault scaling
 
