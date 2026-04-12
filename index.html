@@ -86,6 +86,7 @@ function buildSceneTuning() {
   const linkCount = links.length;
   const dense = nodeCount > 350 || linkCount > 1200;
   const huge = nodeCount > 900 || linkCount > 3200;
+  const massive = nodeCount > 3000 || linkCount > 10000;
   const motion = currentMotionProfile();
 
   if (!cfg.autoScaleLargeVaults) {
@@ -93,6 +94,7 @@ function buildSceneTuning() {
       motion,
       dense,
       huge,
+      massive,
       particlesEnabled: cfg.particles,
       particleDensity: cfg.particleDensity,
       particleCap: MAX_PARTICLES,
@@ -100,9 +102,32 @@ function buildSceneTuning() {
       labelCount: cfg.hubLabelCount,
       labelMinImportance: cfg.labelMinImportance,
       glowScale: 1,
+      glowEnabled: cfg.nodeGlow,
       linkOpacityScale: 1,
       haloAlpha: cfg.clusterHalos ? 0.11 : 0,
-      haloRadiusBoost: 1
+      haloRadiusBoost: 1,
+      skipSort: false
+    };
+  }
+
+  if (massive) {
+    return {
+      motion,
+      dense: true,
+      huge: true,
+      massive: true,
+      particlesEnabled: cfg.particles && linkCount < 15000,
+      particleDensity: cfg.particleDensity * 0.06,
+      particleCap: 40,
+      linkStep: Math.max(8, Math.ceil(linkCount / 1500)),
+      labelCount: Math.min(cfg.hubLabelCount, 3),
+      labelMinImportance: Math.max(cfg.labelMinImportance, 0.6),
+      glowScale: 0,
+      glowEnabled: false,
+      linkOpacityScale: 0.55,
+      haloAlpha: 0,
+      haloRadiusBoost: 0,
+      skipSort: true
     };
   }
 
@@ -110,6 +135,7 @@ function buildSceneTuning() {
     motion,
     dense,
     huge,
+    massive: false,
     particlesEnabled: cfg.particles && !(huge && linkCount > 5000),
     particleDensity: huge ? cfg.particleDensity * 0.18 : dense ? cfg.particleDensity * 0.55 : cfg.particleDensity,
     particleCap: huge ? 120 : dense ? 260 : MAX_PARTICLES,
@@ -117,9 +143,11 @@ function buildSceneTuning() {
     labelCount: huge ? Math.min(cfg.hubLabelCount, 4) : dense ? Math.min(cfg.hubLabelCount, 6) : cfg.hubLabelCount,
     labelMinImportance: Math.max(cfg.labelMinImportance, huge ? 0.42 : dense ? 0.28 : 0),
     glowScale: huge ? 0.82 : dense ? 0.92 : 1,
+    glowEnabled: cfg.nodeGlow,
     linkOpacityScale: huge ? 0.78 : dense ? 0.9 : 1,
     haloAlpha: cfg.clusterHalos ? (huge ? 0.05 : dense ? 0.08 : 0.11) : 0,
-    haloRadiusBoost: huge ? 0.85 : dense ? 0.95 : 1
+    haloRadiusBoost: huge ? 0.85 : dense ? 0.95 : 1,
+    skipSort: false
   };
 }
 
@@ -362,15 +390,16 @@ async function loadGraph() {
 
     if (sim) sim.stop();
     const count = nodes.length;
-    const charge = count > 600 ? -10 : count > 200 ? -15 : count > 50 ? -25 : -30;
-    const distance = count > 600 ? 24 : count > 200 ? 30 : 40;
+    const isMassive = count > 3000;
+    const charge = isMassive ? -4 : count > 600 ? -10 : count > 200 ? -15 : count > 50 ? -25 : -30;
+    const distance = isMassive ? 16 : count > 600 ? 24 : count > 200 ? 30 : 40;
     sim = d3.forceSimulation(nodes)
-      .force('link', d3.forceLink(links).id(node => node.id).distance(distance).strength(0.3))
-      .force('charge', d3.forceManyBody().strength(charge))
+      .force('link', d3.forceLink(links).id(node => node.id).distance(distance).strength(isMassive ? 0.15 : 0.3))
+      .force('charge', d3.forceManyBody().strength(charge).theta(isMassive ? 1.2 : 0.9))
       .force('center', d3.forceCenter(innerWidth / 2, innerHeight / 2))
-      .force('collide', d3.forceCollide().radius(node => node.r + 2))
-      .alphaDecay(count > 600 ? 0.03 : 0.02)
-      .velocityDecay(count > 600 ? 0.68 : 0.6)
+      .force('collide', isMassive ? null : d3.forceCollide().radius(node => node.r + 2))
+      .alphaDecay(isMassive ? 0.05 : count > 600 ? 0.03 : 0.02)
+      .velocityDecay(isMassive ? 0.75 : count > 600 ? 0.68 : 0.6)
       .on('tick', () => {
         forceCluster(sim.alpha());
       });
@@ -559,7 +588,7 @@ function drawEdges() {
 }
 
 function drawNodes() {
-  const sorted = [...nodes].sort((a, b) => (a.importance || 0) - (b.importance || 0));
+  const sorted = sceneTuning.skipSort ? nodes : [...nodes].sort((a, b) => (a.importance || 0) - (b.importance || 0));
   sorted.forEach(node => {
     const point = framePoint(node);
     if (!point) return;
@@ -578,7 +607,7 @@ function drawNodes() {
     const flare = node.ghost ? 0 : getFlareIntensity(node.id);
     const radius = node.r * dofScale;
 
-    if (cfg.nodeGlow && !node.ghost) {
+    if (sceneTuning.glowEnabled && !node.ghost) {
       const glowRadius = (radius + 4 + importance * 12 + pulse * 2 + flare * 20) * sceneTuning.glowScale;
       const glowAlpha = (0.08 + importance * 0.15 + pulse * 0.03 + flare * 0.4) * dofAlpha;
       const gradient = ctx.createRadialGradient(point.x, point.y, radius * 0.5, point.x, point.y, glowRadius);

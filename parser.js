@@ -233,11 +233,17 @@ function writeConfigFile(nextCfg, configPath = cfgPath) {
   fs.renameSync(tmp, configPath);
 }
 
+const crypto = require('crypto');
+
 const WIKILINK = /\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g;
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---/;
 const TAGS_FLOW = /^tags:\s*\[([^\]]*)\]/m;
 const TAGS_BLOCK = /^tags:\s*\r?\n((?:\s*-\s+.+\r?\n?)+)/m;
 const TAGS_INLINE = /(?:^|\s)#([a-zA-Z][\w-/]*)/g;
+
+// --- Incremental file cache ---
+// Maps absolute file path → { hash, basename, content, tag, wikilinks[] }
+const fileCache = new Map();
 
 function extractTag(content) {
   const fm = content.match(FRONTMATTER);
@@ -262,11 +268,29 @@ function extractTag(content) {
   return null;
 }
 
+function contentHash(content) {
+  return crypto.createHash('md5').update(content).digest('hex');
+}
+
+function extractWikilinks(content) {
+  const result = [];
+  WIKILINK.lastIndex = 0;
+  let m;
+  while ((m = WIKILINK.exec(content)) !== null) {
+    const tgt = m[1].trim();
+    if (tgt.length > 0) result.push(tgt);
+  }
+  return result;
+}
+
 function buildGraph(vaultPath, outPath = OUT, options = {}) {
   const showUnresolved = options.showUnresolvedLinks !== undefined ? options.showUnresolvedLinks : DEFAULTS.showUnresolvedLinks;
+  const incremental = options.incremental !== false;
+
   // First pass: collect every .md file and detect which basenames appear more than once
   const raw = [];
   const basenameCounts = {};
+  const currentPaths = new Set();
   (function walk(dir) {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       if (e.name.startsWith('.')) continue;
@@ -276,25 +300,58 @@ function buildGraph(vaultPath, outPath = OUT, options = {}) {
         const basename = e.name.replace(/\.md$/, '');
         raw.push({ basename, filePath: p });
         basenameCounts[basename] = (basenameCounts[basename] || 0) + 1;
+        currentPaths.add(p);
       }
     }
   })(vaultPath);
+
+  // Prune cache entries for deleted files
+  for (const cachedPath of fileCache.keys()) {
+    if (!currentPaths.has(cachedPath)) fileCache.delete(cachedPath);
+  }
 
   const duplicatedBasenames = new Set(
     Object.entries(basenameCounts).filter(([, c]) => c > 1).map(([b]) => b)
   );
 
-  // Second pass: assign IDs, read content, extract tags
-  // Unique basenames keep their short name; duplicates get folder/basename
+  // Second pass: assign IDs, read content (with incremental caching), extract tags
   const files = {};
   const tags = {};
-  // Maps a basename to all node IDs that share it (for wikilink resolution)
   const basenameToIds = {};
+  let cacheHits = 0;
+  let cacheMisses = 0;
   for (const { basename, filePath } of raw) {
     const id = noteId(basename, filePath, vaultPath, duplicatedBasenames);
-    const content = fs.readFileSync(filePath, 'utf8');
-    files[id] = { content, path: filePath, basename };
-    const tag = extractTag(content);
+    let content, tag, wikilinks;
+
+    if (incremental) {
+      const cached = fileCache.get(filePath);
+      // Fast check: use mtime+size to skip reading unchanged files
+      let stat;
+      try { stat = fs.statSync(filePath); } catch { continue; }
+      const fingerprint = `${stat.mtimeMs}:${stat.size}`;
+
+      if (cached && cached.fingerprint === fingerprint) {
+        // File unchanged — reuse cached parse results without reading
+        content = cached.content;
+        tag = cached.tag;
+        wikilinks = cached.wikilinks;
+        cacheHits++;
+      } else {
+        // File is new or changed — read and parse
+        content = fs.readFileSync(filePath, 'utf8');
+        tag = extractTag(content);
+        wikilinks = extractWikilinks(content);
+        fileCache.set(filePath, { fingerprint, content, tag, wikilinks, basename });
+        cacheMisses++;
+      }
+    } else {
+      content = fs.readFileSync(filePath, 'utf8');
+      tag = extractTag(content);
+      wikilinks = extractWikilinks(content);
+    }
+
+    files[id] = { content, path: filePath, basename, wikilinks: wikilinks || extractWikilinks(content) };
     if (tag) tags[id] = tag;
     if (!basenameToIds[basename]) basenameToIds[basename] = [];
     basenameToIds[basename].push(id);
@@ -316,10 +373,7 @@ function buildGraph(vaultPath, outPath = OUT, options = {}) {
   const linkSet = new Set();
   const ghostIds = new Set();
   for (const [src, file] of Object.entries(files)) {
-    WIKILINK.lastIndex = 0;
-    let m;
-    while ((m = WIKILINK.exec(file.content)) !== null) {
-      const tgt = m[1].trim();
+    for (const tgt of file.wikilinks) {
       // Resolve wikilink by basename — may match multiple IDs if duplicated
       const targetIds = basenameToIds[tgt] || (nodeSet.has(tgt) ? [tgt] : []);
       if (targetIds.length === 0 && showUnresolved && tgt.length > 0) {
@@ -357,6 +411,9 @@ function buildGraph(vaultPath, outPath = OUT, options = {}) {
   fs.writeFileSync(tmp, JSON.stringify({ nodes, links }));
   fs.renameSync(tmp, outPath);
   const tagged = Object.keys(tags).length;
+  if (incremental && (cacheHits + cacheMisses) > 0) {
+    console.log(`cache: ${cacheHits} unchanged, ${cacheMisses} re-parsed`);
+  }
   return { nodes, links, tagged, discoveredTags };
 }
 
@@ -496,19 +553,30 @@ function startApp(options = {}) {
     process.exit(1);
   }
 
+  // Debounce rebuild so rapid file saves (e.g. batch renames, sync)
+  // collapse into a single parse instead of hammering the vault
+  let debounceTimer = null;
+  const DEBOUNCE_MS = 500;
+
+  const debouncedRebuild = () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      try {
+        rebuild();
+      } catch (e) {
+        console.error(`build failed: ${e.message}`);
+      }
+    }, DEBOUNCE_MS);
+  };
+
   const watcher = chokidar.watch(state.cfg.vaultPath, {
     ignoreInitial: true,
     ignored: [/(^|[/\\])\./, /\.(?!md$)[^.]+$/],
     awaitWriteFinish: { stabilityThreshold: 300 }
   });
 
-  watcher.on('all', () => {
-    try {
-      rebuild();
-    } catch (e) {
-      console.error(`build failed: ${e.message}`);
-    }
-  })
+  watcher.on('all', debouncedRebuild)
   .on('error', e => {
     console.error('watcher error:', e.message);
   });
