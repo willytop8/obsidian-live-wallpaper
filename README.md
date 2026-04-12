@@ -8,7 +8,7 @@
 
 Obsidian Live Wallpaper turns your vault graph into a live desktop backdrop: glowing nodes, tag-colored clusters, curated visual presets, smarter hub labels, and motion that stays atmospheric instead of noisy. It is built to feel like wallpaper first, graph tooling second.
 
-**macOS and Windows.**
+**macOS, Windows, and Linux.**
 
 ## Why
 
@@ -39,6 +39,7 @@ You'll need [Node.js](https://nodejs.org) (v18+) and a wallpaper host app:
 
 - **macOS**: [Plash](https://apps.apple.com/us/app/plash/id1494023538) (free, Mac App Store)
 - **Windows**: [Lively Wallpaper](https://www.rocksdanister.com/lively/) (free, open source)
+- **Linux**: KDE has native support; GNOME via [Hidamari](https://github.com/jeffshee/hidamari); tiling WMs via [xwinwrap](https://github.com/ujjwal96/xwinwrap)
 
 ```bash
 git clone https://github.com/willytop8/obsidian-live-wallpaper.git
@@ -73,6 +74,7 @@ You can also use the graph as a background inside Obsidian itself with the [Live
 For autostart and troubleshooting, see the platform-specific guides:
 - [`macos-setup.md`](macos-setup.md)
 - [`windows-setup.md`](windows-setup.md)
+- [`linux-setup.md`](linux-setup.md)
 
 ## How it works
 
