@@ -27,6 +27,10 @@ const DEFAULTS = {
   noteFlare: true,
   autoScaleLargeVaults: true,
   showUnresolvedLinks: true,
+  glowIntensity: 1,
+  edgeStyle: 'line',
+  nodeColorMode: 'tag',
+  maxRenderedNodes: 5000,
   tagColors: {}
 };
 const PUBLIC_FILES = new Map([
@@ -34,10 +38,15 @@ const PUBLIC_FILES = new Map([
   ['/index.html', path.join(__dirname, 'index.html')],
   ['/settings.html', path.join(__dirname, 'settings.html')],
   ['/vendor/d3.min.js', path.join(__dirname, 'vendor', 'd3.min.js')],
+  ['/worker.js', path.join(__dirname, 'worker.js')],
+  ['/presets.json', path.join(__dirname, 'presets.json')],
   ['/graph.json', OUT]
 ]);
+const DOCS_DIR = path.join(__dirname, 'docs');
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 const MOTION_MODES = new Set(['light', 'balanced', 'showcase']);
+const EDGE_STYLES = new Set(['line', 'curve', 'none']);
+const NODE_COLOR_MODES = new Set(['tag', 'age']);
 
 function noteId(basename, filePath, vaultPath, duplicatedBasenames) {
   if (!duplicatedBasenames.has(basename)) return basename;
@@ -141,6 +150,10 @@ function sanitizePersistedConfig(raw) {
     noteFlare: raw.noteFlare === undefined ? DEFAULTS.noteFlare : validateBoolean(raw.noteFlare, 'noteFlare'),
     autoScaleLargeVaults: raw.autoScaleLargeVaults === undefined ? DEFAULTS.autoScaleLargeVaults : validateBoolean(raw.autoScaleLargeVaults, 'autoScaleLargeVaults'),
     showUnresolvedLinks: raw.showUnresolvedLinks === undefined ? DEFAULTS.showUnresolvedLinks : validateBoolean(raw.showUnresolvedLinks, 'showUnresolvedLinks'),
+    glowIntensity: raw.glowIntensity === undefined ? 1 : validateNumber(raw.glowIntensity, 'glowIntensity', 0, 1),
+    edgeStyle: raw.edgeStyle === undefined ? 'line' : validateEnum(raw.edgeStyle, 'edgeStyle', EDGE_STYLES),
+    nodeColorMode: raw.nodeColorMode === undefined ? 'tag' : validateEnum(raw.nodeColorMode, 'nodeColorMode', NODE_COLOR_MODES),
+    maxRenderedNodes: raw.maxRenderedNodes === undefined ? 5000 : validateInteger(raw.maxRenderedNodes, 'maxRenderedNodes', 100, 100000),
     tagColors: sanitizeTagColors(raw.tagColors)
   };
   if (!fs.existsSync(vaultPath)) {
@@ -174,6 +187,10 @@ function sanitizeConfigPatch(raw) {
     'noteFlare',
     'autoScaleLargeVaults',
     'showUnresolvedLinks',
+    'glowIntensity',
+    'edgeStyle',
+    'nodeColorMode',
+    'maxRenderedNodes',
     'tagColors'
   ]);
   const patch = {};
@@ -201,10 +218,22 @@ function sanitizeConfigPatch(raw) {
       case 'motionMode':
         patch[key] = validateEnum(value, key, MOTION_MODES);
         break;
+      case 'edgeStyle':
+        patch[key] = validateEnum(value, key, EDGE_STYLES);
+        break;
+      case 'nodeColorMode':
+        patch[key] = validateEnum(value, key, NODE_COLOR_MODES);
+        break;
       case 'hubLabelCount':
         patch[key] = validateInteger(value, key, 1, 50);
         break;
+      case 'maxRenderedNodes':
+        patch[key] = validateInteger(value, key, 100, 100000);
+        break;
       case 'labelMinImportance':
+        patch[key] = validateNumber(value, key, 0, 1);
+        break;
+      case 'glowIntensity':
         patch[key] = validateNumber(value, key, 0, 1);
         break;
       case 'tagColors':
@@ -342,16 +371,22 @@ function buildGraph(vaultPath, outPath = OUT, options = {}) {
         content = fs.readFileSync(filePath, 'utf8');
         tag = extractTag(content);
         wikilinks = extractWikilinks(content);
-        fileCache.set(filePath, { fingerprint, content, tag, wikilinks, basename });
+        fileCache.set(filePath, { fingerprint, content, tag, wikilinks, basename, mtimeMs: stat.mtimeMs });
         cacheMisses++;
       }
+      files[id] = { content, path: filePath, basename, wikilinks, mtimeMs: stat.mtimeMs };
+      if (tag) tags[id] = tag;
+      if (!basenameToIds[basename]) basenameToIds[basename] = [];
+      basenameToIds[basename].push(id);
+      continue;
     } else {
       content = fs.readFileSync(filePath, 'utf8');
       tag = extractTag(content);
       wikilinks = extractWikilinks(content);
     }
 
-    files[id] = { content, path: filePath, basename, wikilinks: wikilinks || extractWikilinks(content) };
+    const statNonInc = (() => { try { return fs.statSync(filePath); } catch { return null; } })();
+    files[id] = { content, path: filePath, basename, wikilinks: wikilinks || extractWikilinks(content), mtimeMs: statNonInc ? statNonInc.mtimeMs : 0 };
     if (tag) tags[id] = tag;
     if (!basenameToIds[basename]) basenameToIds[basename] = [];
     basenameToIds[basename].push(id);
@@ -366,6 +401,7 @@ function buildGraph(vaultPath, outPath = OUT, options = {}) {
     const node = { id };
     if (files[id].basename !== id) node.label = files[id].basename;
     if (tags[id]) node.tag = tags[id];
+    if (files[id].mtimeMs) node.mtime = files[id].mtimeMs;
     return node;
   });
   const nodeSet = new Set(nodes.map(n => n.id));
@@ -510,6 +546,16 @@ function createRequestHandler(state) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(state.discoveredTags));
       return;
+    }
+
+    // Serve /docs/presets/*.png thumbnails for the theme picker.
+    if (url.startsWith('/docs/') && req.method === 'GET') {
+      const rel = url.slice('/docs/'.length).replace(/\.\./g, '');
+      const abs = path.join(DOCS_DIR, rel);
+      if (abs.startsWith(DOCS_DIR) && fs.existsSync(abs) && fs.statSync(abs).isFile()) {
+        serveFile(res, abs);
+        return;
+      }
     }
 
     const filePath = publicFiles.get(url);

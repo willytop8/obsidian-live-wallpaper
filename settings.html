@@ -40,10 +40,15 @@
   .val { font-size: 13px; color: var(--dim); min-width: 32px; text-align: right; margin-left: 8px; }
   .controls { display: flex; align-items: center; gap: 8px; }
 
-  .presets { display: flex; gap: 8px; flex-wrap: wrap; }
-  .preset { padding: 8px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; font-size: 13px; color: var(--text); transition: border-color 0.15s; }
-  .preset:hover { border-color: var(--accent); }
-  .preset .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  .preset { display: flex; flex-direction: column; padding: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; color: var(--text); overflow: hidden; text-align: left; transition: border-color 0.15s, transform 0.15s; font: inherit; }
+  .preset:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .preset.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .preset .thumb { width: 100%; aspect-ratio: 16/9; background: #000 center/cover no-repeat; display: block; }
+  .preset .thumb.fallback { display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--dim); }
+  .preset .meta { padding: 8px 10px; }
+  .preset .meta .name { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .preset .meta .desc { font-size: 11px; color: var(--dim); line-height: 1.35; }
 
   .tag-list { display: flex; flex-direction: column; gap: 0; }
   .tag-row { display: flex; align-items: center; padding: 10px 16px; background: var(--surface); border: 1px solid var(--border); margin-bottom: -1px; gap: 12px; }
@@ -187,6 +192,12 @@
     <label class="toggle"><input type="checkbox" id="autoScaleLargeVaults" checked><span class="slider"></span></label>
   </div>
   <div class="row">
+    <div><label>Max rendered nodes</label><div class="hint">Cap on drawn nodes; excess hidden by lowest importance (lower = faster)</div></div>
+    <div class="controls">
+      <input type="number" id="maxRenderedNodes" min="100" max="100000" step="100" value="5000">
+    </div>
+  </div>
+  <div class="row">
     <div><label>Refresh interval</label><div class="hint">How often the wallpaper checks for vault changes</div></div>
     <div class="controls">
       <input type="number" id="refreshMs" min="1000" max="60000" step="1000" value="5000">
@@ -207,56 +218,7 @@ const API = window.location.origin;
 let cfg = {};
 let allTags = {};
 
-const PRESETS = [
-  {
-    name: 'Classic',
-    accent: '#7c5cff',
-    background: '#0a0a0f',
-    config: { accent: '#7c5cff', background: '#0a0a0f', linkOpacity: 0.18, nodeGlow: true, edgeColoring: false, particles: false, particleSpeed: 0.8, particleDensity: 0.12, motionMode: 'light', clusterByTag: false, clusterHalos: false, backgroundGradient: false, hubLabels: false, hubLabelCount: 4, labelMinImportance: 0.32, depthOfField: false, noteFlare: false, autoScaleLargeVaults: true }
-  },
-  {
-    name: 'Minimal',
-    accent: '#d8e1ff',
-    background: '#080b12',
-    config: { accent: '#d8e1ff', background: '#080b12', linkOpacity: 0.12, nodeGlow: true, edgeColoring: false, particles: false, particleSpeed: 0.8, particleDensity: 0.14, motionMode: 'light', clusterByTag: true, clusterHalos: false, backgroundGradient: true, hubLabels: true, hubLabelCount: 4, labelMinImportance: 0.28, depthOfField: true, noteFlare: false, autoScaleLargeVaults: true }
-  },
-  {
-    name: 'Ambient',
-    accent: '#7c5cff',
-    background: '#0a0a0f',
-    config: { accent: '#7c5cff', background: '#0a0a0f', linkOpacity: 0.18, nodeGlow: true, edgeColoring: true, particles: true, particleSpeed: 1, particleDensity: 0.28, motionMode: 'balanced', clusterByTag: true, clusterHalos: true, backgroundGradient: true, hubLabels: false, hubLabelCount: 5, labelMinImportance: 0.22, depthOfField: true, noteFlare: true, autoScaleLargeVaults: true }
-  },
-  {
-    name: 'Neon',
-    accent: '#00ffd5',
-    background: '#050816',
-    config: { accent: '#00ffd5', background: '#050816', linkOpacity: 0.24, nodeGlow: true, edgeColoring: true, particles: true, particleSpeed: 1.25, particleDensity: 0.4, motionMode: 'showcase', clusterByTag: true, clusterHalos: true, backgroundGradient: true, hubLabels: true, hubLabelCount: 6, labelMinImportance: 0.24, depthOfField: true, noteFlare: true, autoScaleLargeVaults: true }
-  },
-  {
-    name: 'Ember',
-    accent: '#ff7a45',
-    background: '#100806',
-    config: { accent: '#ff7a45', background: '#100806', linkOpacity: 0.2, nodeGlow: true, edgeColoring: true, particles: true, particleSpeed: 0.95, particleDensity: 0.24, motionMode: 'balanced', clusterByTag: true, clusterHalos: true, backgroundGradient: true, hubLabels: true, hubLabelCount: 4, labelMinImportance: 0.26, depthOfField: false, noteFlare: true, autoScaleLargeVaults: true }
-  },
-  {
-    name: 'Monochrome',
-    accent: '#b4bccd',
-    background: '#07080b',
-    config: { accent: '#b4bccd', background: '#07080b', linkOpacity: 0.14, nodeGlow: true, edgeColoring: false, particles: false, particleSpeed: 0.8, particleDensity: 0.12, motionMode: 'light', clusterByTag: false, clusterHalos: false, backgroundGradient: true, hubLabels: true, hubLabelCount: 5, labelMinImportance: 0.2, depthOfField: true, noteFlare: false, autoScaleLargeVaults: true }
-  },
-  {
-    name: 'Galaxy',
-    accent: '#89a7ff',
-    background: '#060916',
-    config: { accent: '#89a7ff', background: '#060916', linkOpacity: 0.16, nodeGlow: true, edgeColoring: true, particles: true, particleSpeed: 1.1, particleDensity: 0.32, motionMode: 'balanced', clusterByTag: true, clusterHalos: true, backgroundGradient: true, hubLabels: false, hubLabelCount: 5, labelMinImportance: 0.3, depthOfField: true, noteFlare: true, autoScaleLargeVaults: true }
-  },
-  {
-    name: 'Embedded',
-    accent: '#7c5cff',
-    background: '#1e1e2e',
-    config: { accent: '#7c5cff', background: '#1e1e2e', linkOpacity: 0.08, nodeGlow: true, edgeColoring: false, particles: true, particleSpeed: 0.6, particleDensity: 0.1, motionMode: 'light', clusterByTag: true, clusterHalos: false, backgroundGradient: false, hubLabels: false, hubLabelCount: 3, labelMinImportance: 0.4, depthOfField: true, noteFlare: false, autoScaleLargeVaults: true }
-  }
-];
+let PRESETS = [];
 
 function applyForm() {
   document.getElementById('accent').value = cfg.accent ?? '#7c5cff';
@@ -282,6 +244,7 @@ function applyForm() {
   document.getElementById('labelMinImportance').value = Math.round((cfg.labelMinImportance ?? 0.22) * 100);
   document.getElementById('labelMinImportanceVal').textContent = (cfg.labelMinImportance ?? 0.22).toFixed(2);
   document.getElementById('autoScaleLargeVaults').checked = cfg.autoScaleLargeVaults !== false;
+  document.getElementById('maxRenderedNodes').value = cfg.maxRenderedNodes ?? 5000;
   document.getElementById('refreshMs').value = cfg.refreshMs ?? 5000;
 }
 
@@ -331,10 +294,20 @@ async function save(updates) {
 
 function renderPresets() {
   const el = document.getElementById('presets');
-  el.innerHTML = PRESETS.map(p =>
-    `<button class="preset" data-name="${p.name}">` +
-    `<span class="dot" style="background:${p.accent}"></span>${p.name}</button>`
-  ).join('');
+  if (!PRESETS.length) {
+    el.innerHTML = '<div class="tag-empty">Loading themes…</div>';
+    return;
+  }
+  el.innerHTML = PRESETS.map(p => {
+    const thumb = p.thumbnail
+      ? `<span class="thumb" style="background-image:url('${p.thumbnail}');background-color:${p.background}"></span>`
+      : `<span class="thumb fallback" style="background-color:${p.background};color:${p.accent}">${p.name}</span>`;
+    const desc = p.description ? `<div class="desc">${p.description}</div>` : '';
+    return `<button class="preset" data-name="${p.name}">
+      ${thumb}
+      <div class="meta"><div class="name">${p.name}</div>${desc}</div>
+    </button>`;
+  }).join('');
   el.addEventListener('click', async e => {
     const btn = e.target.closest('.preset');
     if (!btn) return;
@@ -343,8 +316,21 @@ function renderPresets() {
     if (await save(preset.config)) {
       applyForm();
       renderTags();
+      el.querySelectorAll('.preset').forEach(b => b.classList.toggle('active', b === btn));
     }
-  });
+  }, { once: false });
+}
+
+async function loadPresets() {
+  try {
+    const r = await fetch(API + '/presets.json');
+    if (!r.ok) throw new Error(`presets load failed: ${r.status}`);
+    PRESETS = await r.json();
+  } catch (e) {
+    PRESETS = [];
+    status('Failed to load presets', 'err');
+  }
+  renderPresets();
 }
 
 function renderTags() {
@@ -432,8 +418,13 @@ document.getElementById('refreshMs').addEventListener('change', e => {
   e.target.value = v;
   save({ refreshMs: v });
 });
+document.getElementById('maxRenderedNodes').addEventListener('change', e => {
+  const v = Math.max(100, Math.min(100000, parseInt(e.target.value) || 5000));
+  e.target.value = v;
+  save({ maxRenderedNodes: v });
+});
 
-renderPresets();
+loadPresets();
 loadConfig().then(loadTags);
 </script>
 </body></html>

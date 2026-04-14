@@ -17,6 +17,7 @@ const DEFAULTS = {
   tagColors: {},
   linkOpacity: 0.18,
   nodeGlow: true,
+  glowIntensity: 1,
   particles: true,
   particleSpeed: 1,
   particleDensity: 0.3,
@@ -30,8 +31,17 @@ const DEFAULTS = {
   edgeColoring: true,
   depthOfField: true,
   noteFlare: true,
-  autoScaleLargeVaults: true
+  autoScaleLargeVaults: true,
+  fastHash: true,
+  maxRenderedNodes: 5000,
+  edgeStyle: 'line',
+  nodeColorMode: 'tag'
 };
+
+const EDGE_STYLES = new Set(['line', 'curve', 'none']);
+const NODE_COLOR_MODES = new Set(['tag', 'age']);
+// Age-palette: fresh (green) → mid (amber) → stale (red)
+const AGE_PALETTE = ['#78d97c', '#b8d960', '#e8c84a', '#e89a3c', '#d96b4a'];
 
 const MOTION_PROFILES = {
   light: { driftAmp: 0.4, phaseSpeed: 0.008, pulseSpeed: 0.012, particleSpawnEvery: 6, particleBurst: 3, particleAlpha: 0.78 },
@@ -53,6 +63,158 @@ let particlePool = [];
 let sceneTuning = buildSceneTuning();
 let graphTimer = null;
 let framePoints = new Map();
+let simRunning = false;
+let simIdleFrames = 0;
+let simAlpha = 0;
+let simWorker = null;
+let simGeneration = 0;
+let lastConfigChangeAt = performance.now();
+function markConfigChanged() { lastConfigChangeAt = performance.now(); }
+
+const QUERY_PARAMS = (() => {
+  try { return new URLSearchParams(location.search); }
+  catch (e) { return new URLSearchParams(); }
+})();
+const PERF_ENABLED = QUERY_PARAMS.get('perf') === '1';
+const ONESHOT = QUERY_PARAMS.get('oneshot') === '1';
+const SYNTHETIC_SIZE = (() => {
+  const n = parseInt(QUERY_PARAMS.get('synthetic') || '', 10);
+  return Number.isFinite(n) && n > 0 ? Math.min(200000, n) : 0;
+})();
+const SYNTHETIC_CFG = (() => {
+  const raw = QUERY_PARAMS.get('cfgjson');
+  if (!raw) return null;
+  try { return JSON.parse(decodeURIComponent(raw)); }
+  catch (e) { console.warn('cfgjson parse failed', e.message); return null; }
+})();
+function buildSyntheticGraph(size) {
+  // Barabasi-like preferential-attachment graph with ~3 tags.
+  const nodes = new Array(size);
+  const tags = ['project', 'idea', 'reference', 'note', 'ref'];
+  const now = Date.now();
+  const spanMs = 1000 * 60 * 60 * 24 * 365 * 2;
+  // Pre-layout: golden-angle spiral with tag-based clustering offset, so
+  // synthetic previews don't need the worker sim to settle before capture.
+  const cx = innerWidth / 2;
+  const cy = innerHeight / 2;
+  const maxR = Math.min(innerWidth, innerHeight) * 0.42;
+  const PHI = Math.PI * (3 - Math.sqrt(5));
+  const tagCount = tags.length;
+  const clusterOffsets = new Array(tagCount);
+  for (let i = 0; i < tagCount; i++) {
+    const a = (i / tagCount) * Math.PI * 2;
+    clusterOffsets[i] = { x: Math.cos(a) * maxR * 0.28, y: Math.sin(a) * maxR * 0.28 };
+  }
+  for (let i = 0; i < size; i++) {
+    const r = Math.sin(i * 12.9898) * 43758.5453;
+    const frac = r - Math.floor(r);
+    const tagIdx = i % tagCount;
+    const radius = Math.sqrt(i / size) * maxR * 0.6;
+    const theta = i * PHI;
+    const offset = clusterOffsets[tagIdx];
+    nodes[i] = {
+      id: 'n' + i,
+      tag: tags[tagIdx],
+      mtime: now - frac * spanMs,
+      x: cx + offset.x + Math.cos(theta) * radius,
+      y: cy + offset.y + Math.sin(theta) * radius
+    };
+  }
+  const links = [];
+  const degree = new Int32Array(size);
+  const linkCap = Math.min(size * 4, 160000);
+  for (let i = 1; i < size && links.length < linkCap; i++) {
+    // Each new node attaches to k existing nodes biased by degree.
+    const k = 1 + (Math.random() < 0.35 ? 1 : 0) + (i > 20 && Math.random() < 0.15 ? 1 : 0);
+    for (let j = 0; j < k; j++) {
+      let target;
+      if (Math.random() < 0.55 && i > 1) {
+        // preferential: pick a random existing edge endpoint
+        const pick = links[Math.floor(Math.random() * links.length)];
+        target = Math.random() < 0.5 ? pick.source : pick.target;
+        if (typeof target === 'string') target = parseInt(target.slice(1), 10);
+      } else {
+        target = Math.floor(Math.random() * i);
+      }
+      if (target === i) continue;
+      links.push({ source: 'n' + i, target: 'n' + target });
+      degree[i] += 1;
+      degree[target] += 1;
+    }
+  }
+  return { nodes, links };
+}
+let __perfRecord = null;
+let __perfFrame = null;
+let __perfWrap = (name, fn) => fn;
+let __perfWrapTick = (fn) => fn;
+if (PERF_ENABLED) {
+  const SECTIONS = ['buildFramePoints', 'drawEdges', 'drawNodes', 'drawClusterHalos', 'tick'];
+  const buckets = {};
+  SECTIONS.forEach(s => { buckets[s] = { sum: 0, count: 0, avgMs: 0, lastMs: 0 }; });
+  let frameCount = 0;
+  let windowStart = performance.now();
+  const snapshot = { fps: 0, sections: buckets, nodes: 0, links: 0, particles: 0, alpha: 0 };
+  window.__perf = snapshot;
+  __perfRecord = (name, ms) => {
+    const b = buckets[name];
+    if (!b) return;
+    b.sum += ms;
+    b.count += 1;
+    b.lastMs = ms;
+  };
+  __perfFrame = () => {
+    frameCount += 1;
+    const now = performance.now();
+    const elapsed = now - windowStart;
+    if (elapsed >= 1000) {
+      snapshot.fps = Math.round((frameCount * 1000) / elapsed);
+      for (const s of SECTIONS) {
+        const b = buckets[s];
+        b.avgMs = b.count ? b.sum / b.count : 0;
+        b.sum = 0;
+        b.count = 0;
+      }
+      snapshot.nodes = nodes.length;
+      snapshot.links = links.length;
+      snapshot.particles = particlePool.length;
+      snapshot.alpha = simAlpha;
+      frameCount = 0;
+      windowStart = now;
+    }
+  };
+  __perfWrap = (name, fn) => function () {
+    const t = performance.now();
+    const r = fn.apply(this, arguments);
+    __perfRecord(name, performance.now() - t);
+    return r;
+  };
+  __perfWrapTick = (fn) => function () {
+    const t = performance.now();
+    const r = fn.apply(this, arguments);
+    __perfRecord('tick', performance.now() - t);
+    return r;
+  };
+  const hud = document.createElement('div');
+  hud.style.cssText = 'position:fixed;top:8px;left:8px;z-index:99999;font:11px/1.35 ui-monospace,Menlo,monospace;color:#b8f0ff;background:rgba(8,12,20,0.72);padding:8px 10px;border:1px solid rgba(120,180,220,0.25);border-radius:6px;pointer-events:none;white-space:pre;';
+  hud.textContent = 'perf…';
+  const attach = () => document.body ? document.body.appendChild(hud) : addEventListener('DOMContentLoaded', () => document.body.appendChild(hud));
+  attach();
+  const fmt = (n) => n.toFixed(2).padStart(6);
+  setInterval(() => {
+    hud.textContent =
+      'FPS ' + String(snapshot.fps).padStart(3) + '\n' +
+      'nodes    ' + snapshot.nodes + '\n' +
+      'links    ' + snapshot.links + '\n' +
+      'particles ' + snapshot.particles + '\n' +
+      'alpha    ' + snapshot.alpha.toFixed(4) + '\n' +
+      'build    ' + fmt(buckets.buildFramePoints.avgMs) + ' ms\n' +
+      'halos    ' + fmt(buckets.drawClusterHalos.avgMs) + ' ms\n' +
+      'edges    ' + fmt(buckets.drawEdges.avgMs) + ' ms\n' +
+      'nodesDr  ' + fmt(buckets.drawNodes.avgMs) + ' ms\n' +
+      'tick     ' + fmt(buckets.tick.avgMs) + ' ms';
+  }, 500);
+}
 
 function finiteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
@@ -74,7 +236,31 @@ function normalizeConfig(data) {
   const next = { ...DEFAULTS, ...(isPlainObject(data) ? data : {}) };
   next.motionMode = MOTION_PROFILES[next.motionMode] ? next.motionMode : DEFAULTS.motionMode;
   next.tagColors = isPlainObject(next.tagColors) ? next.tagColors : {};
+  next.glowIntensity = finiteNumber(next.glowIntensity) ? clamp(next.glowIntensity, 0, 1) : DEFAULTS.glowIntensity;
+  next.maxRenderedNodes = finiteNumber(next.maxRenderedNodes)
+    ? Math.max(100, Math.min(100000, Math.floor(next.maxRenderedNodes)))
+    : DEFAULTS.maxRenderedNodes;
+  next.edgeStyle = EDGE_STYLES.has(next.edgeStyle) ? next.edgeStyle : DEFAULTS.edgeStyle;
+  next.nodeColorMode = NODE_COLOR_MODES.has(next.nodeColorMode) ? next.nodeColorMode : DEFAULTS.nodeColorMode;
   return next;
+}
+
+let __ageStats = null;
+function refreshAgeStats() {
+  let min = Infinity, max = -Infinity;
+  for (const n of nodes) {
+    const t = n.mtime || 0;
+    if (!t) continue;
+    if (t < min) min = t;
+    if (t > max) max = t;
+  }
+  __ageStats = Number.isFinite(min) && max > min ? { min, max } : null;
+}
+function ageColor(node) {
+  if (!__ageStats || !node.mtime) return AGE_PALETTE[0];
+  const t = (node.mtime - __ageStats.min) / (__ageStats.max - __ageStats.min);
+  const idx = Math.min(AGE_PALETTE.length - 1, Math.floor((1 - t) * AGE_PALETTE.length));
+  return AGE_PALETTE[idx];
 }
 
 function currentMotionProfile() {
@@ -87,6 +273,7 @@ function buildSceneTuning() {
   const dense = nodeCount > 350 || linkCount > 1200;
   const huge = nodeCount > 900 || linkCount > 3200;
   const massive = nodeCount > 3000 || linkCount > 10000;
+  const ultra = nodeCount > 10000 || linkCount > 40000;
   const motion = currentMotionProfile();
 
   if (!cfg.autoScaleLargeVaults) {
@@ -107,6 +294,29 @@ function buildSceneTuning() {
       haloAlpha: cfg.clusterHalos ? 0.11 : 0,
       haloRadiusBoost: 1,
       skipSort: false
+    };
+  }
+
+  if (ultra) {
+    return {
+      motion,
+      dense: true,
+      huge: true,
+      massive: true,
+      ultra: true,
+      particlesEnabled: false,
+      particleDensity: 0,
+      particleCap: 20,
+      linkStep: Math.max(16, Math.ceil(linkCount / 2000)),
+      labelCount: Math.min(cfg.hubLabelCount, 3),
+      labelMinImportance: 0.7,
+      glowScale: 0,
+      glowEnabled: false,
+      linkOpacityScale: 0.5,
+      haloAlpha: 0,
+      haloRadiusBoost: 0,
+      skipSort: true,
+      maxRenderedNodes: 4000
     };
   }
 
@@ -153,7 +363,82 @@ function buildSceneTuning() {
 
 function refreshSceneTuning() {
   sceneTuning = buildSceneTuning();
-  particlePool = particlePool.slice(0, sceneTuning.particleCap);
+  ensureParticlePool(sceneTuning.particleCap);
+  applyRenderableCap();
+  rebuildQuadtree();
+}
+
+let lastQuadtreeBuild = 0;
+const VIEW_MARGIN = 100;
+let __cullFrame = -1;
+
+function rebuildQuadtree() {
+  if (typeof d3 === 'undefined' || typeof d3.quadtree !== 'function' || nodes.length === 0) {
+    sceneTuning.quadtree = null;
+    lastQuadtreeBuild = performance.now();
+    return;
+  }
+  const q = d3.quadtree().x(n => n.x).y(n => n.y);
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    if (hasPoint(n)) q.add(n);
+  }
+  sceneTuning.quadtree = q;
+  lastQuadtreeBuild = performance.now();
+}
+
+function maybeRebuildQuadtree() {
+  if (!sceneTuning.quadtree) { rebuildQuadtree(); return; }
+  if (simRunning && performance.now() - lastQuadtreeBuild >= 2000) rebuildQuadtree();
+}
+
+function markVisibleNodes() {
+  const quad = sceneTuning.quadtree;
+  if (!quad) return false;
+  const minX = -VIEW_MARGIN;
+  const minY = -VIEW_MARGIN;
+  const maxX = innerWidth + VIEW_MARGIN;
+  const maxY = innerHeight + VIEW_MARGIN;
+  quad.visit((qnode, x1, y1, x2, y2) => {
+    if (!qnode.length) {
+      let leaf = qnode;
+      do {
+        const d = leaf.data;
+        if (d && d.x >= minX && d.x <= maxX && d.y >= minY && d.y <= maxY) {
+          d.__vFrame = tick;
+        }
+      } while ((leaf = leaf.next));
+      return;
+    }
+    return x1 >= maxX || y1 >= maxY || x2 < minX || y2 < minY;
+  });
+  __cullFrame = tick;
+  return true;
+}
+
+function ensureParticlePool(cap) {
+  while (particlePool.length < cap) {
+    particlePool.push({ active: false, link: null, t: 0, speed: 0, alpha: 0, size: 0 });
+  }
+  if (particlePool.length > cap) particlePool.length = cap;
+}
+
+function applyRenderableCap() {
+  const cfgCap = finiteNumber(cfg.maxRenderedNodes) ? Math.floor(cfg.maxRenderedNodes) : 0;
+  const tierCap = sceneTuning.maxRenderedNodes || 0;
+  let cap = 0;
+  if (cfgCap > 0 && tierCap > 0) cap = Math.min(cfgCap, tierCap);
+  else cap = cfgCap || tierCap;
+  sceneTuning.maxRenderedNodes = cap;
+  if (!cap || cap >= nodes.length) {
+    for (let i = 0; i < nodes.length; i++) nodes[i].__renderable = true;
+    return;
+  }
+  const idx = new Array(nodes.length);
+  for (let i = 0; i < nodes.length; i++) idx[i] = i;
+  idx.sort((a, b) => (nodes[b].importance || 0) - (nodes[a].importance || 0));
+  for (let i = 0; i < nodes.length; i++) nodes[i].__renderable = false;
+  for (let i = 0; i < cap && i < idx.length; i++) nodes[idx[i]].__renderable = true;
 }
 
 function applyBackground() {
@@ -170,7 +455,90 @@ function resize() {
 }
 
 resize();
-addEventListener('resize', resize);
+addEventListener('resize', () => { resize(); invalidateStaticLayer(); markConfigChanged(); });
+
+const GLOW_SPRITE_SIZE = 128;
+let glowSpriteBase = null;
+const glowSpriteCache = new Map();
+
+function buildGlowSpriteBase() {
+  const c = document.createElement('canvas');
+  c.width = c.height = GLOW_SPRITE_SIZE;
+  const g = c.getContext('2d');
+  const half = GLOW_SPRITE_SIZE / 2;
+  const grad = g.createRadialGradient(half, half, 0, half, half, half);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.5, 'rgba(255,255,255,0.32)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, GLOW_SPRITE_SIZE, GLOW_SPRITE_SIZE);
+  return c;
+}
+
+function getGlowSprite(hex) {
+  let sprite = glowSpriteCache.get(hex);
+  if (sprite) return sprite;
+  if (!glowSpriteBase) glowSpriteBase = buildGlowSpriteBase();
+  sprite = document.createElement('canvas');
+  sprite.width = sprite.height = GLOW_SPRITE_SIZE;
+  const g = sprite.getContext('2d');
+  g.drawImage(glowSpriteBase, 0, 0);
+  g.globalCompositeOperation = 'source-in';
+  g.fillStyle = hex;
+  g.fillRect(0, 0, GLOW_SPRITE_SIZE, GLOW_SPRITE_SIZE);
+  glowSpriteCache.set(hex, sprite);
+  return sprite;
+}
+
+let staticLayer = null;
+let staticLayerCtx = null;
+let staticLayerDirty = true;
+let staticLayerLastBuild = 0;
+
+function invalidateStaticLayer() { staticLayerDirty = true; }
+
+function ensureStaticLayer() {
+  const w = Math.max(1, Math.floor(innerWidth * DPR));
+  const h = Math.max(1, Math.floor(innerHeight * DPR));
+  if (!staticLayer || staticLayer.width !== w || staticLayer.height !== h) {
+    if (typeof OffscreenCanvas !== 'undefined') {
+      staticLayer = new OffscreenCanvas(w, h);
+    } else {
+      staticLayer = document.createElement('canvas');
+      staticLayer.width = w;
+      staticLayer.height = h;
+    }
+    staticLayerCtx = staticLayer.getContext('2d');
+    staticLayerDirty = true;
+  }
+}
+
+function renderStaticLayer() {
+  ensureStaticLayer();
+  const g = staticLayerCtx;
+  g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  g.clearRect(0, 0, innerWidth, innerHeight);
+  drawBackgroundGradient(g);
+  drawClusterHalos(g);
+  staticLayerDirty = false;
+  staticLayerLastBuild = performance.now();
+}
+
+function drawStaticLayer() {
+  if (!staticLayer) {
+    renderStaticLayer();
+  } else if (staticLayerDirty) {
+    if (!simRunning || performance.now() - staticLayerLastBuild >= 500) {
+      renderStaticLayer();
+    }
+  }
+  if (staticLayer) {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(staticLayer, 0, 0);
+    ctx.restore();
+  }
+}
 
 function hexToRGB(h) {
   const n = parseInt(h.slice(1), 16);
@@ -191,6 +559,7 @@ function mixChannel(a, b, amount) {
 }
 
 function nodeColor(node) {
+  if (cfg.nodeColorMode === 'age') return ageColor(node);
   return (node.tag && cfg.tagColors[node.tag]) || cfg.accent;
 }
 
@@ -277,18 +646,23 @@ async function loadJson(pathname) {
 }
 
 async function loadCfg() {
-  const data = await loadJson('/api/config');
-  if (data) {
-    cfg = normalizeConfig(data);
+  if (SYNTHETIC_SIZE > 0 && SYNTHETIC_CFG) {
+    cfg = normalizeConfig(SYNTHETIC_CFG);
   } else {
-    console.warn('config API not available, using defaults');
+    const data = await loadJson('/api/config');
+    if (data) {
+      cfg = normalizeConfig(data);
+    } else {
+      console.warn('config API not available, using defaults');
+    }
   }
   applyBackground();
   refreshSceneTuning();
+  invalidateStaticLayer();
 }
 
 function forceCluster(alpha) {
-  if (!cfg.clusterByTag) return;
+  if (!simRunning || !cfg.clusterByTag) return;
   const centroids = {};
   const counts = {};
   nodes.forEach(node => {
@@ -315,7 +689,33 @@ function forceCluster(alpha) {
   });
 }
 
-function graphHash(graph) {
+function hashStr(s) {
+  let h = 0;
+  if (!s) return 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return h;
+}
+
+function graphHashFast(graph) {
+  const ns = graph.nodes;
+  const ls = graph.links;
+  const nLen = ns.length;
+  const lLen = ls.length;
+  let h = (nLen ^ (lLen * 2654435761)) | 0;
+  const sample = nLen < 16 ? nLen : 16;
+  for (let i = 0; i < sample; i++) h ^= hashStr(ns[i].id);
+  for (let i = 0; i < sample; i++) h ^= hashStr(ns[nLen - 1 - i].id);
+  let linkSum = 0;
+  for (let i = 0; i < lLen; i++) {
+    const link = ls[i];
+    const s = typeof link.source === 'string' ? link.source : (link.source && link.source.id) || '';
+    const t = typeof link.target === 'string' ? link.target : (link.target && link.target.id) || '';
+    linkSum = (linkSum + hashStr(s) + Math.imul(hashStr(t), 31)) | 0;
+  }
+  return nLen + ':' + lLen + ':' + ((h ^ linkSum) >>> 0);
+}
+
+function graphHashSlow(graph) {
   const nodePart = graph.nodes
     .map(node => `${node.id}|${node.tag || ''}`)
     .sort()
@@ -331,6 +731,10 @@ function graphHash(graph) {
   return `${nodePart}\n---\n${linkPart}`;
 }
 
+function graphHash(graph) {
+  return cfg.fastHash === false ? graphHashSlow(graph) : graphHashFast(graph);
+}
+
 function randomPosition(spread) {
   return {
     x: innerWidth / 2 + (Math.random() - 0.5) * spread,
@@ -338,9 +742,48 @@ function randomPosition(spread) {
   };
 }
 
+function ensureSimWorker() {
+  if (simWorker) return simWorker;
+  try {
+    simWorker = new Worker('/worker.js');
+  } catch (e) {
+    console.warn('sim worker failed to start:', e.message);
+    simWorker = null;
+    return null;
+  }
+  simWorker.onmessage = (e) => {
+    const msg = e.data;
+    if (!msg) return;
+    if (msg.generation !== simGeneration) return; // stale tick from previous graph
+    if (msg.type !== 'tick' && msg.type !== 'stopped') return;
+    const buf = new Float32Array(msg.buffer);
+    const len = Math.min(nodes.length, (msg.count | 0) || (buf.length >> 2));
+    for (let i = 0; i < len; i++) {
+      const node = nodes[i];
+      const bx = buf[i * 4];
+      const by = buf[i * 4 + 1];
+      const bvx = buf[i * 4 + 2];
+      const bvy = buf[i * 4 + 3];
+      if (Number.isFinite(bx)) node.x = bx;
+      if (Number.isFinite(by)) node.y = by;
+      if (Number.isFinite(bvx)) node.vx = bvx;
+      if (Number.isFinite(bvy)) node.vy = bvy;
+    }
+    simAlpha = msg.alpha || 0;
+    if (msg.type === 'stopped') {
+      simRunning = false;
+      rebuildQuadtree();
+    }
+  };
+  simWorker.onerror = (err) => { console.warn('sim worker error:', err.message || err); };
+  return simWorker;
+}
+
 async function loadGraph() {
   try {
-    const graph = await loadJson('graph.json');
+    const graph = SYNTHETIC_SIZE > 0
+      ? buildSyntheticGraph(SYNTHETIC_SIZE)
+      : await loadJson('graph.json');
     if (!graph?.nodes || !graph?.links) return;
     const hash = graphHash(graph);
     if (hash === lastHash) return;
@@ -353,7 +796,9 @@ async function loadGraph() {
     const spread = Math.min(innerWidth, innerHeight) * 0.4;
     nodes = graph.nodes.map(node => {
       const previous = previousNodes.get(node.id);
-      const fallback = randomPosition(spread);
+      const presetX = finiteNumber(node.x) ? node.x : null;
+      const presetY = finiteNumber(node.y) ? node.y : null;
+      const fallback = presetX !== null ? { x: presetX, y: presetY } : randomPosition(spread);
       return previous
         ? Object.assign(previous, {
             tag: node.tag,
@@ -367,11 +812,16 @@ async function loadGraph() {
         : { ...node, ghost: node.ghost || false, ...fallback, vx: 0, vy: 0 };
     });
     links = graph.links;
-    particlePool = particlePool.filter(particle => {
-      const source = particle.link?.source?.id || particle.link?.source;
-      const target = particle.link?.target?.id || particle.link?.target;
-      return newIds.has(source) && newIds.has(target);
-    });
+    for (let i = 0; i < particlePool.length; i++) {
+      const p = particlePool[i];
+      if (!p.active) continue;
+      const source = p.link?.source?.id || p.link?.source;
+      const target = p.link?.target?.id || p.link?.target;
+      if (!newIds.has(source) || !newIds.has(target)) {
+        p.active = false;
+        p.link = null;
+      }
+    }
 
     const degree = {};
     links.forEach(link => {
@@ -386,23 +836,76 @@ async function loadGraph() {
       node.importance = Math.min(1, degreeCount / maxDeg);
     });
 
+    // Resolve link source/target strings to node object refs. d3.forceLink
+    // used to do this on the main thread; the worker now owns the sim, so we
+    // replicate it here for draw/particle code that expects node references.
+    const nodeById = new Map();
+    for (let i = 0; i < nodes.length; i++) nodeById.set(nodes[i].id, nodes[i]);
+    for (let i = 0; i < links.length; i++) {
+      const link = links[i];
+      if (typeof link.source === 'string') link.source = nodeById.get(link.source) || link.source;
+      if (typeof link.target === 'string') link.target = nodeById.get(link.target) || link.target;
+    }
+
+    refreshAgeStats();
     refreshSceneTuning();
 
+    if (SYNTHETIC_SIZE > 0) {
+      // Synthetic mode pre-lays nodes out; skip the worker sim entirely so
+      // headless screenshots capture a stable frame on first paint.
+      simRunning = false;
+      simAlpha = 0;
+      sim = { alpha: () => 0, stop: () => {} };
+      markConfigChanged();
+      invalidateStaticLayer();
+      return;
+    }
+
+    ensureSimWorker();
     if (sim) sim.stop();
-    const count = nodes.length;
-    const isMassive = count > 3000;
-    const charge = isMassive ? -4 : count > 600 ? -10 : count > 200 ? -15 : count > 50 ? -25 : -30;
-    const distance = isMassive ? 16 : count > 600 ? 24 : count > 200 ? 30 : 40;
-    sim = d3.forceSimulation(nodes)
-      .force('link', d3.forceLink(links).id(node => node.id).distance(distance).strength(isMassive ? 0.15 : 0.3))
-      .force('charge', d3.forceManyBody().strength(charge).theta(isMassive ? 1.2 : 0.9))
-      .force('center', d3.forceCenter(innerWidth / 2, innerHeight / 2))
-      .force('collide', isMassive ? null : d3.forceCollide().radius(node => node.r + 2))
-      .alphaDecay(isMassive ? 0.05 : count > 600 ? 0.03 : 0.02)
-      .velocityDecay(isMassive ? 0.75 : count > 600 ? 0.68 : 0.6)
-      .on('tick', () => {
-        forceCluster(sim.alpha());
-      });
+    simRunning = true;
+    simIdleFrames = 0;
+    simAlpha = 1;
+    simGeneration += 1;
+    markConfigChanged();
+    invalidateStaticLayer();
+
+    // Provide a shim so the rest of the code can still call sim.stop()/alpha().
+    sim = {
+      alpha: () => simAlpha,
+      stop: () => {
+        simRunning = false;
+        if (simWorker) simWorker.postMessage({ type: 'stop' });
+      }
+    };
+
+    const workerNodes = new Array(nodes.length);
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i];
+      workerNodes[i] = {
+        id: n.id,
+        tag: n.tag || null,
+        r: n.r,
+        x: n.x, y: n.y,
+        vx: n.vx || 0, vy: n.vy || 0
+      };
+    }
+    const workerLinks = new Array(links.length);
+    for (let i = 0; i < links.length; i++) {
+      const l = links[i];
+      const s = typeof l.source === 'object' ? l.source.id : l.source;
+      const t = typeof l.target === 'object' ? l.target.id : l.target;
+      workerLinks[i] = { source: s, target: t };
+    }
+    simWorker.postMessage({
+      type: 'start',
+      generation: simGeneration,
+      nodes: workerNodes,
+      links: workerLinks,
+      clusterByTag: !!cfg.clusterByTag,
+      centerX: innerWidth / 2,
+      centerY: innerHeight / 2
+    });
   } catch (error) {
     console.warn('load failed:', error.message);
   }
@@ -444,35 +947,45 @@ function spawnParticles() {
     sceneTuning.motion.particleBurst,
     Math.max(1, Math.floor(links.length * sceneTuning.particleDensity * 0.008))
   );
-  for (let i = 0; i < count && particlePool.length < sceneTuning.particleCap; i++) {
+  let spawned = 0;
+  for (let i = 0; i < particlePool.length && spawned < count; i++) {
+    const slot = particlePool[i];
+    if (slot.active) continue;
     const link = links[Math.floor(Math.random() * links.length)];
     if (!hasPoint(link.source) || !hasPoint(link.target)) continue;
-    particlePool.push({
-      link,
-      t: 0,
-      speed: (0.003 + Math.random() * 0.004) * cfg.particleSpeed,
-      alpha: (0.28 + Math.random() * 0.35) * sceneTuning.motion.particleAlpha,
-      size: 0.9 + Math.random() * 1.1
-    });
+    slot.active = true;
+    slot.link = link;
+    slot.t = 0;
+    slot.speed = (0.003 + Math.random() * 0.004) * cfg.particleSpeed;
+    slot.alpha = (0.28 + Math.random() * 0.35) * sceneTuning.motion.particleAlpha;
+    slot.size = 0.9 + Math.random() * 1.1;
+    spawned++;
   }
 }
 
 function updateParticles() {
-  for (let i = particlePool.length - 1; i >= 0; i--) {
-    particlePool[i].t += particlePool[i].speed;
-    if (particlePool[i].t >= 1) particlePool.splice(i, 1);
+  for (let i = 0; i < particlePool.length; i++) {
+    const p = particlePool[i];
+    if (!p.active) continue;
+    p.t += p.speed;
+    if (p.t >= 1) {
+      p.active = false;
+      p.link = null;
+    }
   }
 }
 
 function drawParticles() {
   if (!sceneTuning.particlesEnabled) return;
-  particlePool.forEach(particle => {
+  for (let i = 0; i < particlePool.length; i++) {
+    const particle = particlePool[i];
+    if (!particle.active) continue;
     const source = framePoint(particle.link.source);
     const target = framePoint(particle.link.target);
-    if (!source || !target) return;
+    if (!source || !target) continue;
     const x = source.x + (target.x - source.x) * particle.t;
     const y = source.y + (target.y - source.y) * particle.t;
-    if (!finiteNumber(x) || !finiteNumber(y)) return;
+    if (!finiteNumber(x) || !finiteNumber(y)) continue;
     const color = cfg.edgeColoring ? edgeColor(particle.link) : cfg.accent;
     const [r, g, b] = hexToRGB(color);
     const fade = particle.t < 0.1 ? particle.t / 0.1 : particle.t > 0.88 ? (1 - particle.t) / 0.12 : 1;
@@ -480,7 +993,7 @@ function drawParticles() {
     ctx.arc(x, y, particle.size, 0, Math.PI * 2);
     ctx.fillStyle = rgba(r, g, b, particle.alpha * fade);
     ctx.fill();
-  });
+  }
 }
 
 function buildClusterHalos() {
@@ -525,80 +1038,122 @@ function buildClusterHalos() {
     .sort((a, b) => a.radius - b.radius);
 }
 
-function drawBackgroundGradient() {
+function drawBackgroundGradient(g) {
   if (!cfg.backgroundGradient) return;
-  const [br, bg, bb] = hexToRGB(cfg.background);
+  const [br, bgg, bb] = hexToRGB(cfg.background);
   const [ar, ag, ab] = hexToRGB(cfg.accent);
   const cx = innerWidth / 2;
   const cy = innerHeight / 2;
   const radius = Math.max(innerWidth, innerHeight) * 0.72;
-  const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+  const gradient = g.createRadialGradient(cx, cy, 0, cx, cy, radius);
   gradient.addColorStop(0, rgba(
     mixChannel(br, ar, 0.15),
-    mixChannel(bg, ag, 0.15),
+    mixChannel(bgg, ag, 0.15),
     mixChannel(bb, ab, 0.15),
     1
   ));
-  gradient.addColorStop(0.5, rgba(br, bg, bb, 1));
+  gradient.addColorStop(0.5, rgba(br, bgg, bb, 1));
   gradient.addColorStop(1, rgba(
     Math.max(0, br - 5),
-    Math.max(0, bg - 5),
+    Math.max(0, bgg - 5),
     Math.max(0, bb - 5),
     1
   ));
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, innerWidth, innerHeight);
+  g.fillStyle = gradient;
+  g.fillRect(0, 0, innerWidth, innerHeight);
 }
 
-function drawClusterHalos() {
+function drawClusterHalos(g) {
   for (const halo of buildClusterHalos()) {
-    const [r, g, b] = hexToRGB(halo.color);
-    const gradient = ctx.createRadialGradient(halo.x, halo.y, 0, halo.x, halo.y, halo.radius);
-    gradient.addColorStop(0, rgba(r, g, b, sceneTuning.haloAlpha));
-    gradient.addColorStop(0.55, rgba(r, g, b, sceneTuning.haloAlpha * 0.28));
-    gradient.addColorStop(1, rgba(r, g, b, 0));
-    ctx.fillStyle = gradient;
-    ctx.beginPath();
-    ctx.arc(halo.x, halo.y, halo.radius, 0, Math.PI * 2);
-    ctx.fill();
+    const [r, gg, b] = hexToRGB(halo.color);
+    const gradient = g.createRadialGradient(halo.x, halo.y, 0, halo.x, halo.y, halo.radius);
+    gradient.addColorStop(0, rgba(r, gg, b, sceneTuning.haloAlpha));
+    gradient.addColorStop(0.55, rgba(r, gg, b, sceneTuning.haloAlpha * 0.28));
+    gradient.addColorStop(1, rgba(r, gg, b, 0));
+    g.fillStyle = gradient;
+    g.beginPath();
+    g.arc(halo.x, halo.y, halo.radius, 0, Math.PI * 2);
+    g.fill();
   }
 }
 
 function drawEdges() {
+  const style = cfg.edgeStyle || 'line';
+  if (style === 'none') return;
+  const edgeCap = sceneTuning.maxRenderedNodes || 0;
+  const cullActive = __cullFrame === tick;
+  const groups = new Map();
   for (let i = 0; i < links.length; i += sceneTuning.linkStep) {
     const link = links[i];
+    if (edgeCap && (link.source.__renderable === false || link.target.__renderable === false)) continue;
+    if (cullActive && link.source.__vFrame !== tick && link.target.__vFrame !== tick) continue;
     const source = framePoint(link.source);
     const target = framePoint(link.target);
     if (!source || !target) continue;
     const importance = Math.max(link.source.importance || 0, link.target.importance || 0);
-    const alpha = cfg.linkOpacity * sceneTuning.linkOpacityScale * (0.3 + importance * 0.7);
-    const color = edgeColor(link);
-    let dofMultiplier = 1;
+    let alpha = cfg.linkOpacity * sceneTuning.linkOpacityScale * (0.3 + importance * 0.7);
+    let lineWidth = 0.4 + importance * 0.6;
     if (cfg.depthOfField) {
       const avgDist = (distFromCenterPoint(source.x, source.y) + distFromCenterPoint(target.x, target.y)) / 2;
-      dofMultiplier = 1 - avgDist * 0.5;
+      const dofMultiplier = 1 - avgDist * 0.5;
+      alpha *= dofMultiplier;
+      lineWidth *= dofMultiplier;
     }
-    ctx.strokeStyle = hex2rgba(color, alpha * dofMultiplier);
-    ctx.lineWidth = (0.4 + importance * 0.6) * dofMultiplier;
-    ctx.beginPath();
-    ctx.moveTo(source.x, source.y);
-    ctx.lineTo(target.x, target.y);
-    ctx.stroke();
+    const color = edgeColor(link);
+    let group = groups.get(color);
+    if (!group) { group = []; groups.set(color, group); }
+    group.push(source.x, source.y, target.x, target.y, alpha, lineWidth);
   }
+  const isCurve = style === 'curve';
+  for (const [color, flat] of groups) {
+    ctx.strokeStyle = color;
+    for (let i = 0; i < flat.length; i += 6) {
+      const a = flat[i + 4];
+      if (a <= 0) continue;
+      ctx.globalAlpha = Math.min(1, a);
+      ctx.lineWidth = flat[i + 5];
+      const x1 = flat[i], y1 = flat[i + 1], x2 = flat[i + 2], y2 = flat[i + 3];
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      if (isCurve) {
+        // Quadratic curve with a perpendicular offset so clustered groups
+        // read as soft contour bands instead of a straight-line mesh.
+        const mx = (x1 + x2) * 0.5;
+        const my = (y1 + y2) * 0.5;
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const len = Math.sqrt(dx * dx + dy * dy) || 1;
+        // Stable sign from endpoint coordinates so curves don't jitter frame-to-frame.
+        const sign = ((x1 * 131 + y2 * 17) | 0) & 1 ? 1 : -1;
+        const bow = Math.min(60, len * 0.22) * sign;
+        ctx.quadraticCurveTo(mx + (-dy / len) * bow, my + (dx / len) * bow, x2, y2);
+      } else {
+        ctx.lineTo(x2, y2);
+      }
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
 }
 
 function drawNodes() {
-  const sorted = sceneTuning.skipSort ? nodes : [...nodes].sort((a, b) => (a.importance || 0) - (b.importance || 0));
-  sorted.forEach(node => {
+  const cap = sceneTuning.maxRenderedNodes || 0;
+  const cullActive = __cullFrame === tick;
+  const glowIntensity = clamp(cfg.glowIntensity ?? 1, 0, 1);
+  const glowEnabled = sceneTuning.glowEnabled && glowIntensity > 0;
+  const groups = new Map();
+
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    if (cap && node.__renderable === false) continue;
+    if (cullActive && node.__vFrame !== tick) continue;
     const point = framePoint(node);
-    if (!point) return;
+    if (!point) continue;
     const color = nodeColor(node);
-    const [cr, cg, cb] = hexToRGB(color);
     const importance = node.importance || 0;
     const pulse = Math.sin(tick * sceneTuning.motion.pulseSpeed + node.x * 0.004 + node.y * 0.003) * 0.5 + 0.5;
     const ghostDim = node.ghost ? 0.35 : 1;
-    let dofScale = 1;
-    let dofAlpha = 1;
+    let dofScale = 1, dofAlpha = 1;
     if (cfg.depthOfField) {
       const distance = distFromCenterPoint(point.x, point.y);
       dofScale = 1 - distance * 0.3;
@@ -606,52 +1161,102 @@ function drawNodes() {
     }
     const flare = node.ghost ? 0 : getFlareIntensity(node.id);
     const radius = node.r * dofScale;
-
-    if (sceneTuning.glowEnabled && !node.ghost) {
-      const glowRadius = (radius + 4 + importance * 12 + pulse * 2 + flare * 20) * sceneTuning.glowScale;
-      const glowAlpha = (0.08 + importance * 0.15 + pulse * 0.03 + flare * 0.4) * dofAlpha;
-      const gradient = ctx.createRadialGradient(point.x, point.y, radius * 0.5, point.x, point.y, glowRadius);
-      const glowCr = flare > 0 ? Math.min(255, cr + Math.floor(flare * 150)) : cr;
-      const glowCg = flare > 0 ? Math.min(255, cg + Math.floor(flare * 150)) : cg;
-      const glowCb = flare > 0 ? Math.min(255, cb + Math.floor(flare * 150)) : cb;
-      gradient.addColorStop(0, rgba(glowCr, glowCg, glowCb, glowAlpha));
-      gradient.addColorStop(1, rgba(glowCr, glowCg, glowCb, 0));
-      ctx.beginPath();
-      ctx.arc(point.x, point.y, glowRadius, 0, Math.PI * 2);
-      ctx.fillStyle = gradient;
-      ctx.fill();
+    const highPass = importance >= 0.3 || flare > 0;
+    let group = groups.get(color);
+    if (!group) {
+      group = { low: [], high: [] };
+      groups.set(color, group);
     }
+    const item = { node, px: point.x, py: point.y, importance, pulse, ghostDim, dofAlpha, flare, radius };
+    (highPass ? group.high : group.low).push(item);
+  }
 
-    const coreAlpha = (0.55 + importance * 0.35 + pulse * 0.1 + flare * 0.4) * dofAlpha * ghostDim;
-    ctx.beginPath();
-    ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
-    ctx.fillStyle = rgba(
-      Math.min(255, cr + Math.floor(flare * 200)),
-      Math.min(255, cg + Math.floor(flare * 200)),
-      Math.min(255, cb + Math.floor(flare * 200)),
-      Math.min(1, coreAlpha)
-    );
-    ctx.fill();
+  if (glowEnabled) {
+    for (const [color, group] of groups) {
+      const sprite = getGlowSprite(color);
+      const all = group.low.length + group.high.length;
+      if (!all) continue;
+      const render = (list) => {
+        for (let i = 0; i < list.length; i++) {
+          const it = list[i];
+          if (it.node.ghost) continue;
+          const glowRadius = (it.radius + 4 + it.importance * 12 + it.pulse * 2 + it.flare * 20)
+            * sceneTuning.glowScale * glowIntensity;
+          if (glowRadius <= 0) continue;
+          const glowAlpha = (0.08 + it.importance * 0.15 + it.pulse * 0.03 + it.flare * 0.4)
+            * it.dofAlpha * glowIntensity;
+          if (glowAlpha <= 0) continue;
+          ctx.globalAlpha = Math.min(1, glowAlpha);
+          const size = glowRadius * 2;
+          ctx.drawImage(sprite, it.px - glowRadius, it.py - glowRadius, size, size);
+        }
+      };
+      render(group.low);
+      render(group.high);
+    }
+    ctx.globalAlpha = 1;
+  }
 
-    if (!node.ghost && (importance > 0.3 || flare > 0)) {
-      ctx.beginPath();
-      ctx.arc(point.x, point.y, radius * 0.4, 0, Math.PI * 2);
-      ctx.fillStyle = rgba(
-        Math.min(255, cr + 80 + Math.floor(flare * 175)),
-        Math.min(255, cg + 80 + Math.floor(flare * 175)),
-        Math.min(255, cb + 80 + Math.floor(flare * 175)),
-        Math.min(1, (0.7 + pulse * 0.3) * dofAlpha)
+  const drawCoreList = (list, cr, cg, cb, baseColor) => {
+    let fillSet = false;
+    for (let i = 0; i < list.length; i++) {
+      const it = list[i];
+      const coreAlpha = Math.min(1,
+        (0.55 + it.importance * 0.35 + it.pulse * 0.1 + it.flare * 0.4) * it.dofAlpha * it.ghostDim
       );
+      if (it.flare > 0) {
+        ctx.fillStyle = rgba(
+          Math.min(255, cr + Math.floor(it.flare * 200)),
+          Math.min(255, cg + Math.floor(it.flare * 200)),
+          Math.min(255, cb + Math.floor(it.flare * 200)),
+          coreAlpha
+        );
+        fillSet = false;
+      } else {
+        if (!fillSet) { ctx.fillStyle = baseColor; fillSet = true; }
+        ctx.globalAlpha = coreAlpha;
+      }
+      ctx.beginPath();
+      ctx.arc(it.px, it.py, it.radius, 0, Math.PI * 2);
       ctx.fill();
+      if (it.flare === 0) ctx.globalAlpha = 1;
+
+      if (!it.node.ghost && (it.importance > 0.3 || it.flare > 0)) {
+        ctx.fillStyle = rgba(
+          Math.min(255, cr + 80 + Math.floor(it.flare * 175)),
+          Math.min(255, cg + 80 + Math.floor(it.flare * 175)),
+          Math.min(255, cb + 80 + Math.floor(it.flare * 175)),
+          Math.min(1, (0.7 + it.pulse * 0.3) * it.dofAlpha)
+        );
+        ctx.beginPath();
+        ctx.arc(it.px, it.py, it.radius * 0.4, 0, Math.PI * 2);
+        ctx.fill();
+        fillSet = false;
+      }
     }
-  });
+    ctx.globalAlpha = 1;
+  };
+
+  for (const [color, group] of groups) {
+    const [cr, cg, cb] = hexToRGB(color);
+    drawCoreList(group.low, cr, cg, cb, color);
+  }
+  for (const [color, group] of groups) {
+    const [cr, cg, cb] = hexToRGB(color);
+    drawCoreList(group.high, cr, cg, cb, color);
+  }
 }
 
 function drawLabels() {
   if (!cfg.hubLabels || sceneTuning.labelCount <= 0) return;
+  const cullActive = __cullFrame === tick;
+  const cap = sceneTuning.maxRenderedNodes || 0;
   const placed = [];
   const candidates = [...nodes]
-    .filter(node => hasPoint(node) && (node.importance || 0) >= sceneTuning.labelMinImportance)
+    .filter(node => hasPoint(node)
+      && (node.importance || 0) >= sceneTuning.labelMinImportance
+      && !(cap && node.__renderable === false)
+      && !(cullActive && node.__vFrame !== tick))
     .sort((a, b) => (b.importance || 0) - (a.importance || 0))
     .slice(0, sceneTuning.labelCount * 3);
 
@@ -703,11 +1308,20 @@ function drawLabels() {
   }
 }
 
+if (PERF_ENABLED) {
+  buildFramePoints = __perfWrap('buildFramePoints', buildFramePoints);
+  drawClusterHalos = __perfWrap('drawClusterHalos', drawClusterHalos);
+  drawEdges = __perfWrap('drawEdges', drawEdges);
+  drawNodes = __perfWrap('drawNodes', drawNodes);
+}
+
 function draw() {
   buildFramePoints();
+  maybeRebuildQuadtree();
+  markVisibleNodes();
   ctx.clearRect(0, 0, innerWidth, innerHeight);
-  drawBackgroundGradient();
-  drawClusterHalos();
+  if (simRunning) staticLayerDirty = true;
+  drawStaticLayer();
   drawEdges();
   drawParticles();
   drawNodes();
@@ -719,12 +1333,33 @@ function refreshGraphTimer() {
   graphTimer = setInterval(loadGraph, cfg.refreshMs);
 }
 
+function isSceneCalm() {
+  if (simRunning) return false;
+  if (flares.size > 0) return false;
+  if (performance.now() - lastConfigChangeAt < 5000) return false;
+  const cap = sceneTuning.particleCap || MAX_PARTICLES;
+  if (cap > 0) {
+    const limit = cap * 0.2;
+    let active = 0;
+    for (let i = 0; i < particlePool.length; i++) {
+      if (particlePool[i].active) {
+        active += 1;
+        if (active > limit) return false;
+      }
+    }
+  }
+  return true;
+}
+
 function breathe() {
   tick += 1;
   if (tick % sceneTuning.motion.particleSpawnEvery === 0) spawnParticles();
   updateParticles();
   draw();
-  requestAnimationFrame(breathe);
+  if (PERF_ENABLED) __perfFrame();
+  // 4a: drop to 30fps via setTimeout when the scene is calm; otherwise rAF.
+  if (isSceneCalm()) setTimeout(breathe, 33);
+  else requestAnimationFrame(breathe);
 }
 
 applyBackground();
@@ -732,12 +1367,23 @@ applyBackground();
 (async () => {
   await loadCfg();
   await loadGraph();
+  if (SYNTHETIC_SIZE > 0) {
+    if (ONESHOT) {
+      // Advance tick a handful of times so pulse/flare feel non-zero, then
+      // paint one final frame. Used by the screenshot script.
+      for (let i = 0; i < 4; i++) { tick += 1; draw(); }
+      return;
+    }
+    breathe();
+    return;
+  }
   refreshGraphTimer();
   breathe();
   setInterval(async () => {
     const previous = JSON.stringify(cfg);
     await loadCfg();
     if (JSON.stringify(cfg) !== previous) {
+      markConfigChanged();
       refreshGraphTimer();
       lastHash = '';
       await loadGraph();
