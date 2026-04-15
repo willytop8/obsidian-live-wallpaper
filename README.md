@@ -143,36 +143,49 @@ If two markdown files share the same basename (e.g. `Index.md` in different fold
 
 ### Coloring modes
 
-`nodeColorMode` picks how each node gets its color:
+Two ways to color nodes, set with `nodeColorMode`:
 
-- **`tag`** (default) — reads the first tag from each note's frontmatter (`tags: [project, ...]`) or the first inline `#tag` in the body. If that tag has a color in `tagColors`, the node renders in that color instead of the accent. Same-tag nodes cluster together when `clusterByTag` is on.
-- **`age`** — colors nodes by last-modified time along a green→red spectrum (fresh → stale). Useful for seeing which parts of the vault are active. The **Botanical** preset uses this mode.
+- **`tag`** (default) — each note picks up the color of its first tag. Set tag colors in `tagColors`, or leave it empty and everything uses the accent. Same-tag nodes pull toward each other when `clusterByTag` is on.
+- **`age`** — fresh notes are green, stale ones fade to red. Good for seeing which parts of your vault you actually touch. Botanical uses this.
 
 ### Edge styles
 
-`edgeStyle` controls how links are drawn: `line` for straight edges, `curve` for bezier arcs (used by **Topographic**), or `none` to hide edges entirely and rely on clustering alone (used by **Constellation**).
+`edgeStyle` changes how links are drawn. `line` is straight. `curve` gives soft bezier arcs. `none` hides edges entirely and lets clustering do the talking.
 
 ### Presets
 
-The settings page includes ten curated one-click looks tuned for wallpaper use: **Plain**, **Ambient**, **Neon**, **Dense**, **Blueprint**, **Parchment**, **Botanical**, **Constellation**, **Topographic**, and **Contrast**. Each sweeps multiple settings at once — palette, motion, edge style, coloring mode, and label density — so they're meaningfully different rather than recolors of the same scene. The design framework behind them is documented in [`docs/theme-axes.md`](docs/theme-axes.md).
+Ten one-click looks, each a meaningfully different scene rather than a palette swap:
 
-### Large vault scaling
+- **Plain** — minimal, still, mono accent
+- **Ambient** — the default polychrome drift with hubs
+- **Neon** — high-contrast cyber palette, heavy glow
+- **Dense** — tight clusters for busy vaults
+- **Blueprint** — technical drawing feel, muted on dark navy
+- **Parchment** — warm paper tones, subtle motion
+- **Botanical** — age-colored nodes, organic spread
+- **Constellation** — edges hidden, nodes float in clusters
+- **Topographic** — curved edges, map-like flow
+- **Contrast** — bold single-accent, stripped-down
 
-With `autoScaleLargeVaults` on, the renderer trims particles, labels, glow, and edge density as the graph gets denser. Tiers are based on node and link counts:
+Swap between them from the settings page. For the design thinking behind the lineup, see [`docs/theme-axes.md`](docs/theme-axes.md).
 
-| Tier | Trigger | Behavior |
-|------|---------|----------|
-| default | ≤350 nodes / ≤1200 links | Full fidelity |
-| dense | >350 nodes or >1200 links | Reduced particle density, slightly dimmed edges |
-| huge | >900 nodes or >3200 links | Fewer labels, lower glow, sparser particles |
-| massive | >3000 nodes or >10000 links | Glow off, halos off, thinned edges, minimal labels |
-| ultra | >10000 nodes or >40000 links | Particles off, edges sampled, hard cap at 4000 rendered nodes |
+### Large vaults
 
-`maxRenderedNodes` provides a hard cap on top of this — the lowest-importance nodes are dropped first. The goal is to keep the wallpaper atmospheric instead of turning into an unreadable tangle.
+Big graphs turn into mush if you render everything. With `autoScaleLargeVaults` on (the default), the renderer quietly backs off as your vault grows:
 
-### Performance: incremental parsing
+| Vault size | What happens |
+|------------|--------------|
+| Up to ~350 nodes | Full fidelity — everything on |
+| 350–900 nodes | Fewer particles, softer edges |
+| 900–3,000 nodes | Fewer labels, lower glow, sparser particles |
+| 3,000–10,000 nodes | Glow and halos off, edges thinned, labels only on the biggest hubs |
+| 10,000+ nodes | Particles off, edges sampled, hard cap of 4,000 rendered nodes |
 
-The parser uses an MD5-based file cache and only re-parses notes whose content actually changed between scans. Rapid saves are debounced into a single parse, so working in Obsidian doesn't thrash the wallpaper renderer. Cold start still reads every `.md` file once; subsequent passes are near-instant on large vaults.
+If you want a tighter ceiling, set `maxRenderedNodes` — least-connected notes drop first.
+
+### Incremental parsing
+
+The parser fingerprints each `.md` file and skips anything that hasn't actually changed, so editing in Obsidian doesn't cause a full re-scan. Rapid saves are debounced into a single update. The first run still reads the whole vault; everything after that is near-instant.
 
 ## License
 
