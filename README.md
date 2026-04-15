@@ -69,7 +69,7 @@ Open `http://127.0.0.1:3000/settings.html` to customize the visual settings. `va
 
 ### Use it inside Obsidian
 
-You can also use the graph as a background inside Obsidian itself with the [Live Background](https://github.com/DynamicPlayerSector/obsidian-live-background) community plugin. Point it at `http://127.0.0.1:3000` and select the **Embedded** preset in the settings page — it's tuned to stay out of the way of your notes.
+You can also use the graph as a background inside Obsidian itself with the [Live Background](https://github.com/DynamicPlayerSector/obsidian-live-background) community plugin. Point it at `http://127.0.0.1:3000`. For use behind notes, the **Plain**, **Blueprint**, or **Parchment** presets stay out of the way; **Ambient** or **Neon** work better as a standalone wallpaper.
 
 For autostart and troubleshooting, see the platform-specific guides:
 - [`macos-setup.md`](macos-setup.md)
@@ -108,6 +108,9 @@ The renderer ships with a local vendored copy of D3, so the wallpaper still work
 | `refreshMs` | `5000` | Polling interval in ms (increase for 2000+ notes) |
 | `linkOpacity` | `0.18` | Base opacity for graph edges |
 | `nodeGlow` | `true` | Radial glow halo around each node |
+| `glowIntensity` | `1` | Glow halo strength (`0`–`1`); lower for flatter looks |
+| `edgeStyle` | `"line"` | Edge rendering: `line`, `curve`, or `none` |
+| `nodeColorMode` | `"tag"` | Node coloring: `tag` (by first tag) or `age` (by modified time) |
 | `particles` | `true` | Dots flowing along edges |
 | `particleSpeed` | `1` | Multiplier for particle travel speed |
 | `particleDensity` | `0.3` | Particle spawn density along links |
@@ -122,6 +125,7 @@ The renderer ships with a local vendored copy of D3, so the wallpaper still work
 | `hubLabelCount` | `5` | Maximum number of node labels shown when `hubLabels` is on |
 | `labelMinImportance` | `0.22` | Minimum node importance required before labels appear |
 | `autoScaleLargeVaults` | `true` | Automatically reduces particles, labels, and edge density on dense graphs |
+| `maxRenderedNodes` | `5000` | Hard cap on rendered nodes (`100`–`100000`); lowest-importance nodes drop first |
 | `showUnresolvedLinks` | `true` | Show ghost nodes for `[[links]]` to notes that don't exist yet |
 | `tagColors` | `{}` | Map of Obsidian tag → hex color |
 
@@ -137,17 +141,38 @@ With `showUnresolvedLinks` on (the default), any `[[wikilink]]` that points to a
 
 If two markdown files share the same basename (e.g. `Index.md` in different folders), the parser automatically prefixes their node IDs with the folder path so both appear in the graph. A `[[Index]]` wikilink will connect to all notes named `Index`. Labels still show the short name.
 
-### Tag-based coloring
+### Coloring modes
 
-The parser reads the first tag from each note's frontmatter (`tags: [project, ...]`) or the first inline `#tag` in the body. If that tag has a color in `tagColors`, the node renders in that color instead of the accent.
+`nodeColorMode` picks how each node gets its color:
+
+- **`tag`** (default) — reads the first tag from each note's frontmatter (`tags: [project, ...]`) or the first inline `#tag` in the body. If that tag has a color in `tagColors`, the node renders in that color instead of the accent. Same-tag nodes cluster together when `clusterByTag` is on.
+- **`age`** — colors nodes by last-modified time along a green→red spectrum (fresh → stale). Useful for seeing which parts of the vault are active. The **Botanical** preset uses this mode.
+
+### Edge styles
+
+`edgeStyle` controls how links are drawn: `line` for straight edges, `curve` for bezier arcs (used by **Topographic**), or `none` to hide edges entirely and rely on clustering alone (used by **Constellation**).
 
 ### Presets
 
-The settings page includes curated one-click looks tuned for wallpaper use: Classic, Minimal, Ambient, Neon, Ember, Monochrome, Galaxy, and Embedded (designed for use as a background inside Obsidian via the Live Background plugin).
+The settings page includes ten curated one-click looks tuned for wallpaper use: **Plain**, **Ambient**, **Neon**, **Dense**, **Blueprint**, **Parchment**, **Botanical**, **Constellation**, **Topographic**, and **Contrast**. Each sweeps multiple settings at once — palette, motion, edge style, coloring mode, and label density — so they're meaningfully different rather than recolors of the same scene. The design framework behind them is documented in [`docs/theme-axes.md`](docs/theme-axes.md).
 
 ### Large vault scaling
 
-With `autoScaleLargeVaults` on, the renderer automatically trims edge density, particle count, and label noise as the graph gets denser. The goal is to keep the wallpaper atmospheric instead of turning into an unreadable tangle.
+With `autoScaleLargeVaults` on, the renderer trims particles, labels, glow, and edge density as the graph gets denser. Tiers are based on node and link counts:
+
+| Tier | Trigger | Behavior |
+|------|---------|----------|
+| default | ≤350 nodes / ≤1200 links | Full fidelity |
+| dense | >350 nodes or >1200 links | Reduced particle density, slightly dimmed edges |
+| huge | >900 nodes or >3200 links | Fewer labels, lower glow, sparser particles |
+| massive | >3000 nodes or >10000 links | Glow off, halos off, thinned edges, minimal labels |
+| ultra | >10000 nodes or >40000 links | Particles off, edges sampled, hard cap at 4000 rendered nodes |
+
+`maxRenderedNodes` provides a hard cap on top of this — the lowest-importance nodes are dropped first. The goal is to keep the wallpaper atmospheric instead of turning into an unreadable tangle.
+
+### Performance: incremental parsing
+
+The parser uses an MD5-based file cache and only re-parses notes whose content actually changed between scans. Rapid saves are debounced into a single parse, so working in Obsidian doesn't thrash the wallpaper renderer. Cold start still reads every `.md` file once; subsequent passes are near-instant on large vaults.
 
 ## License
 
