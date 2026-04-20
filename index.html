@@ -7,8 +7,9 @@
 <script src="/vendor/d3.min.js"></script>
 <script>
 const canvas = document.getElementById('c');
-const ctx = canvas.getContext('2d');
-const DPR = window.devicePixelRatio || 1;
+const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+const DEVICE_DPR = window.devicePixelRatio || 1;
+let renderScale = DEVICE_DPR;
 
 const DEFAULTS = {
   accent: '#7c5cff',
@@ -61,14 +62,23 @@ let tick = 0;
 let prevNodeIds = new Set();
 let particlePool = [];
 let sceneTuning = buildSceneTuning();
-let graphTimer = null;
-let framePoints = new Map();
 let simRunning = false;
-let simIdleFrames = 0;
 let simAlpha = 0;
 let simWorker = null;
 let simGeneration = 0;
+let simSharedPositions = null;
+let simSharedEnabled = false;
 let lastConfigChangeAt = performance.now();
+let eventSource = null;
+let stateSyncTimer = null;
+let lastSeenGraphVersion = 0;
+let lastSeenConfigVersion = 0;
+let labelCandidates = [];
+const RGB_CACHE = new Map();
+let staticLayer = null;
+let staticLayerCtx = null;
+let staticLayerDirty = true;
+let staticLayerLastBuild = 0;
 function markConfigChanged() { lastConfigChangeAt = performance.now(); }
 
 const QUERY_PARAMS = (() => {
@@ -274,14 +284,15 @@ function buildSceneTuning() {
   const huge = nodeCount > 900 || linkCount > 3200;
   const massive = nodeCount > 3000 || linkCount > 10000;
   const ultra = nodeCount > 10000 || linkCount > 40000;
-  const motion = currentMotionProfile();
+  const baseMotion = currentMotionProfile();
 
   if (!cfg.autoScaleLargeVaults) {
     return {
-      motion,
+      motion: baseMotion,
       dense,
       huge,
       massive,
+      ultra,
       particlesEnabled: cfg.particles,
       particleDensity: cfg.particleDensity,
       particleCap: MAX_PARTICLES,
@@ -290,6 +301,11 @@ function buildSceneTuning() {
       labelMinImportance: cfg.labelMinImportance,
       glowScale: 1,
       glowEnabled: cfg.nodeGlow,
+      edgeStyle: cfg.edgeStyle,
+      edgeColoringEnabled: cfg.edgeColoring,
+      backgroundGradientEnabled: cfg.backgroundGradient,
+      depthOfFieldEnabled: cfg.depthOfField,
+      noteFlareEnabled: cfg.noteFlare,
       linkOpacityScale: 1,
       haloAlpha: cfg.clusterHalos ? 0.11 : 0,
       haloRadiusBoost: 1,
@@ -299,53 +315,66 @@ function buildSceneTuning() {
 
   if (ultra) {
     return {
-      motion,
+      motion: { ...MOTION_PROFILES.light, driftAmp: 0.18, phaseSpeed: 0.005, pulseSpeed: 0.007, particleSpawnEvery: 9999, particleBurst: 0, particleAlpha: 0.4 },
       dense: true,
       huge: true,
       massive: true,
       ultra: true,
       particlesEnabled: false,
       particleDensity: 0,
-      particleCap: 20,
-      linkStep: Math.max(16, Math.ceil(linkCount / 2000)),
-      labelCount: Math.min(cfg.hubLabelCount, 3),
-      labelMinImportance: 0.7,
+      particleCap: 0,
+      linkStep: Math.max(20, Math.ceil(linkCount / 1800)),
+      labelCount: Math.min(cfg.hubLabelCount, 2),
+      labelMinImportance: Math.max(cfg.labelMinImportance, 0.78),
       glowScale: 0,
       glowEnabled: false,
-      linkOpacityScale: 0.5,
+      edgeStyle: 'line',
+      edgeColoringEnabled: false,
+      backgroundGradientEnabled: true,
+      depthOfFieldEnabled: false,
+      noteFlareEnabled: false,
+      linkOpacityScale: 0.32,
       haloAlpha: 0,
       haloRadiusBoost: 0,
       skipSort: true,
-      maxRenderedNodes: 4000
+      maxRenderedNodes: 2800
     };
   }
 
   if (massive) {
     return {
-      motion,
+      motion: { ...MOTION_PROFILES.light, driftAmp: 0.24, phaseSpeed: 0.006, pulseSpeed: 0.009 },
       dense: true,
       huge: true,
       massive: true,
+      ultra: false,
       particlesEnabled: cfg.particles && linkCount < 15000,
-      particleDensity: cfg.particleDensity * 0.06,
-      particleCap: 40,
-      linkStep: Math.max(8, Math.ceil(linkCount / 1500)),
+      particleDensity: cfg.particleDensity * 0.03,
+      particleCap: 18,
+      linkStep: Math.max(10, Math.ceil(linkCount / 1800)),
       labelCount: Math.min(cfg.hubLabelCount, 3),
-      labelMinImportance: Math.max(cfg.labelMinImportance, 0.6),
+      labelMinImportance: Math.max(cfg.labelMinImportance, 0.64),
       glowScale: 0,
       glowEnabled: false,
-      linkOpacityScale: 0.55,
+      edgeStyle: 'line',
+      edgeColoringEnabled: false,
+      backgroundGradientEnabled: cfg.backgroundGradient,
+      depthOfFieldEnabled: false,
+      noteFlareEnabled: false,
+      linkOpacityScale: 0.42,
       haloAlpha: 0,
       haloRadiusBoost: 0,
-      skipSort: true
+      skipSort: true,
+      maxRenderedNodes: 3600
     };
   }
 
   return {
-    motion,
+    motion: huge ? { ...baseMotion, driftAmp: baseMotion.driftAmp * 0.78, phaseSpeed: baseMotion.phaseSpeed * 0.82, pulseSpeed: baseMotion.pulseSpeed * 0.82 } : baseMotion,
     dense,
     huge,
     massive: false,
+    ultra: false,
     particlesEnabled: cfg.particles && !(huge && linkCount > 5000),
     particleDensity: huge ? cfg.particleDensity * 0.18 : dense ? cfg.particleDensity * 0.55 : cfg.particleDensity,
     particleCap: huge ? 120 : dense ? 260 : MAX_PARTICLES,
@@ -354,6 +383,11 @@ function buildSceneTuning() {
     labelMinImportance: Math.max(cfg.labelMinImportance, huge ? 0.42 : dense ? 0.28 : 0),
     glowScale: huge ? 0.82 : dense ? 0.92 : 1,
     glowEnabled: cfg.nodeGlow,
+    edgeStyle: cfg.edgeStyle,
+    edgeColoringEnabled: cfg.edgeColoring,
+    backgroundGradientEnabled: cfg.backgroundGradient,
+    depthOfFieldEnabled: cfg.depthOfField && !huge,
+    noteFlareEnabled: cfg.noteFlare && !huge,
     linkOpacityScale: huge ? 0.78 : dense ? 0.9 : 1,
     haloAlpha: cfg.clusterHalos ? (huge ? 0.05 : dense ? 0.08 : 0.11) : 0,
     haloRadiusBoost: huge ? 0.85 : dense ? 0.95 : 1,
@@ -361,11 +395,31 @@ function buildSceneTuning() {
   };
 }
 
+function computeRenderScale(nextSceneTuning = sceneTuning) {
+  const base = DEVICE_DPR;
+  if (!cfg.autoScaleLargeVaults) return Math.min(base, 2);
+  if (nextSceneTuning?.ultra) return Math.min(base, 1.1);
+  if (nextSceneTuning?.massive) return Math.min(base, 1.25);
+  if (nextSceneTuning?.huge) return Math.min(base, 1.5);
+  if (nextSceneTuning?.dense) return Math.min(base, 1.75);
+  return Math.min(base, 2);
+}
+
 function refreshSceneTuning() {
-  sceneTuning = buildSceneTuning();
+  const nextSceneTuning = buildSceneTuning();
+  const nextScale = computeRenderScale(nextSceneTuning);
+  const scaleChanged = Math.abs(nextScale - renderScale) > 0.001;
+  sceneTuning = nextSceneTuning;
   ensureParticlePool(sceneTuning.particleCap);
   applyRenderableCap();
   rebuildQuadtree();
+  refreshDerivedVisuals();
+  if (scaleChanged) {
+    renderScale = nextScale;
+    resize();
+  } else {
+    invalidateStaticLayer();
+  }
 }
 
 let lastQuadtreeBuild = 0;
@@ -381,6 +435,7 @@ function rebuildQuadtree() {
   const q = d3.quadtree().x(n => n.x).y(n => n.y);
   for (let i = 0; i < nodes.length; i++) {
     const n = nodes[i];
+    if (sceneTuning.maxRenderedNodes && n.__renderable === false) continue;
     if (hasPoint(n)) q.add(n);
   }
   sceneTuning.quadtree = q;
@@ -389,7 +444,9 @@ function rebuildQuadtree() {
 
 function maybeRebuildQuadtree() {
   if (!sceneTuning.quadtree) { rebuildQuadtree(); return; }
-  if (simRunning && performance.now() - lastQuadtreeBuild >= 2000) rebuildQuadtree();
+  if (!simRunning) return;
+  const interval = simAlpha > 0.12 ? 2800 : 6500;
+  if (performance.now() - lastQuadtreeBuild >= interval) rebuildQuadtree();
 }
 
 function markVisibleNodes() {
@@ -446,12 +503,13 @@ function applyBackground() {
 }
 
 function resize() {
-  canvas.width = innerWidth * DPR;
-  canvas.height = innerHeight * DPR;
+  canvas.width = innerWidth * renderScale;
+  canvas.height = innerHeight * renderScale;
   canvas.style.width = innerWidth + 'px';
   canvas.style.height = innerHeight + 'px';
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.scale(DPR, DPR);
+  ctx.scale(renderScale, renderScale);
+  invalidateStaticLayer();
 }
 
 resize();
@@ -490,16 +548,11 @@ function getGlowSprite(hex) {
   return sprite;
 }
 
-let staticLayer = null;
-let staticLayerCtx = null;
-let staticLayerDirty = true;
-let staticLayerLastBuild = 0;
-
 function invalidateStaticLayer() { staticLayerDirty = true; }
 
 function ensureStaticLayer() {
-  const w = Math.max(1, Math.floor(innerWidth * DPR));
-  const h = Math.max(1, Math.floor(innerHeight * DPR));
+  const w = Math.max(1, Math.floor(innerWidth * renderScale));
+  const h = Math.max(1, Math.floor(innerHeight * renderScale));
   if (!staticLayer || staticLayer.width !== w || staticLayer.height !== h) {
     if (typeof OffscreenCanvas !== 'undefined') {
       staticLayer = new OffscreenCanvas(w, h);
@@ -516,7 +569,7 @@ function ensureStaticLayer() {
 function renderStaticLayer() {
   ensureStaticLayer();
   const g = staticLayerCtx;
-  g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  g.setTransform(renderScale, 0, 0, renderScale, 0, 0);
   g.clearRect(0, 0, innerWidth, innerHeight);
   drawBackgroundGradient(g);
   drawClusterHalos(g);
@@ -541,8 +594,12 @@ function drawStaticLayer() {
 }
 
 function hexToRGB(h) {
+  let cached = RGB_CACHE.get(h);
+  if (cached) return cached;
   const n = parseInt(h.slice(1), 16);
-  return [n >> 16 & 255, n >> 8 & 255, n & 255];
+  cached = [n >> 16 & 255, n >> 8 & 255, n & 255];
+  RGB_CACHE.set(h, cached);
+  return cached;
 }
 
 function rgba(r, g, b, a) {
@@ -559,18 +616,57 @@ function mixChannel(a, b, amount) {
 }
 
 function nodeColor(node) {
-  if (cfg.nodeColorMode === 'age') return ageColor(node);
-  return (node.tag && cfg.tagColors[node.tag]) || cfg.accent;
+  return node.__color || cfg.accent;
 }
 
 function edgeColor(link) {
-  if (cfg.edgeColoring) {
-    const sourceColor = link.source.tag && cfg.tagColors[link.source.tag];
-    const targetColor = link.target.tag && cfg.tagColors[link.target.tag];
-    if (sourceColor) return sourceColor;
-    if (targetColor) return targetColor;
+  return link.__color || cfg.accent;
+}
+
+function refreshDerivedVisuals() {
+  if (nodes.length === 0) {
+    labelCandidates = [];
+    return;
   }
-  return cfg.accent;
+
+  refreshAgeStats();
+
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    node.__color = cfg.nodeColorMode === 'age'
+      ? ageColor(node)
+      : ((node.tag && cfg.tagColors[node.tag]) || cfg.accent);
+    node.__labelText = truncateLabel(node.label || node.id, 28);
+    node.__labelFontSize = Math.max(10, 11 + (node.importance || 0) * 5);
+    ctx.font = `${node.__labelFontSize}px -apple-system, BlinkMacSystemFont, 'Inter', sans-serif`;
+    node.__labelWidth = ctx.measureText(node.__labelText).width;
+  }
+
+  for (let i = 0; i < links.length; i++) {
+    const link = links[i];
+    if (sceneTuning.edgeColoringEnabled) {
+      link.__color = (link.source.tag && cfg.tagColors[link.source.tag])
+        || (link.target.tag && cfg.tagColors[link.target.tag])
+        || cfg.accent;
+    } else {
+      link.__color = cfg.accent;
+    }
+  }
+
+  labelCandidates = [...nodes]
+    .filter(node => !node.ghost && hasPoint(node))
+    .sort((a, b) => (b.importance || 0) - (a.importance || 0));
+}
+
+function syncSharedPositions() {
+  if (!simSharedEnabled || !simSharedPositions) return;
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    const x = simSharedPositions[i * 2];
+    const y = simSharedPositions[i * 2 + 1];
+    if (Number.isFinite(x)) node.x = x;
+    if (Number.isFinite(y)) node.y = y;
+  }
 }
 
 function displayPoint(node) {
@@ -583,15 +679,25 @@ function displayPoint(node) {
 }
 
 function buildFramePoints() {
-  framePoints = new Map();
-  for (const node of nodes) {
-    framePoints.set(node.id, displayPoint(node));
+  if (simSharedEnabled && simRunning) syncSharedPositions();
+  const cap = sceneTuning.maxRenderedNodes || 0;
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    node.__vFrame = -1;
+    if (cap && node.__renderable === false) {
+      node.__fx = NaN;
+      node.__fy = NaN;
+      continue;
+    }
+    const point = displayPoint(node);
+    node.__fx = point ? point.x : NaN;
+    node.__fy = point ? point.y : NaN;
   }
 }
 
 function framePoint(node) {
-  if (!node) return null;
-  return framePoints.get(node.id) || null;
+  if (!node || !finiteNumber(node.__fx) || !finiteNumber(node.__fy)) return null;
+  return node;
 }
 
 function distFromCenterPoint(x, y) {
@@ -621,7 +727,7 @@ function truncateLabel(text, maxLength) {
 
 async function loadJson(pathname) {
   try {
-    const response = await fetch(`${pathname}?${Date.now()}`);
+    const response = await fetch(pathname, { cache: 'no-store' });
     if (!response.ok) return null;
     return await response.json();
   } catch (error) {
@@ -646,6 +752,7 @@ async function loadJson(pathname) {
 }
 
 async function loadCfg() {
+  const prevRefreshMs = cfg.refreshMs;
   if (SYNTHETIC_SIZE > 0 && SYNTHETIC_CFG) {
     cfg = normalizeConfig(SYNTHETIC_CFG);
   } else {
@@ -659,34 +766,9 @@ async function loadCfg() {
   applyBackground();
   refreshSceneTuning();
   invalidateStaticLayer();
-}
-
-function forceCluster(alpha) {
-  if (!simRunning || !cfg.clusterByTag) return;
-  const centroids = {};
-  const counts = {};
-  nodes.forEach(node => {
-    if (!node.tag || !hasPoint(node)) return;
-    if (!centroids[node.tag]) {
-      centroids[node.tag] = { x: 0, y: 0 };
-      counts[node.tag] = 0;
-    }
-    centroids[node.tag].x += node.x;
-    centroids[node.tag].y += node.y;
-    counts[node.tag] += 1;
-  });
-  for (const tag in centroids) {
-    centroids[tag].x /= counts[tag];
-    centroids[tag].y /= counts[tag];
+  if (!eventSource && stateSyncTimer && prevRefreshMs !== cfg.refreshMs) {
+    startStateSync();
   }
-  const strength = 0.03 * alpha;
-  nodes.forEach(node => {
-    if (!node.tag || !centroids[node.tag] || !hasPoint(node)) return;
-    node.vx = finiteNumber(node.vx) ? node.vx : 0;
-    node.vy = finiteNumber(node.vy) ? node.vy : 0;
-    node.vx += (centroids[node.tag].x - node.x) * strength;
-    node.vy += (centroids[node.tag].y - node.y) * strength;
-  });
 }
 
 function hashStr(s) {
@@ -756,22 +838,22 @@ function ensureSimWorker() {
     if (!msg) return;
     if (msg.generation !== simGeneration) return; // stale tick from previous graph
     if (msg.type !== 'tick' && msg.type !== 'stopped') return;
-    const buf = new Float32Array(msg.buffer);
-    const len = Math.min(nodes.length, (msg.count | 0) || (buf.length >> 2));
-    for (let i = 0; i < len; i++) {
-      const node = nodes[i];
-      const bx = buf[i * 4];
-      const by = buf[i * 4 + 1];
-      const bvx = buf[i * 4 + 2];
-      const bvy = buf[i * 4 + 3];
-      if (Number.isFinite(bx)) node.x = bx;
-      if (Number.isFinite(by)) node.y = by;
-      if (Number.isFinite(bvx)) node.vx = bvx;
-      if (Number.isFinite(bvy)) node.vy = bvy;
+    if (msg.buffer) {
+      const buf = new Float32Array(msg.buffer);
+      const len = Math.min(nodes.length, (msg.count | 0) || (buf.length >> 1));
+      for (let i = 0; i < len; i++) {
+        const node = nodes[i];
+        const bx = buf[i * 2];
+        const by = buf[i * 2 + 1];
+        if (Number.isFinite(bx)) node.x = bx;
+        if (Number.isFinite(by)) node.y = by;
+      }
     }
     simAlpha = msg.alpha || 0;
     if (msg.type === 'stopped') {
       simRunning = false;
+      simSharedEnabled = false;
+      simSharedPositions = null;
       rebuildQuadtree();
     }
   };
@@ -779,15 +861,20 @@ function ensureSimWorker() {
   return simWorker;
 }
 
-async function loadGraph() {
+async function loadGraph(options = {}) {
   try {
+    const force = !!options.force;
     const graph = SYNTHETIC_SIZE > 0
       ? buildSyntheticGraph(SYNTHETIC_SIZE)
       : await loadJson('graph.json');
     if (!graph?.nodes || !graph?.links) return;
-    const hash = graphHash(graph);
-    if (hash === lastHash) return;
-    lastHash = hash;
+    if (!force) {
+      const hash = graphHash(graph);
+      if (hash === lastHash) return;
+      lastHash = hash;
+    } else {
+      lastHash = graphHash(graph);
+    }
 
     const newIds = new Set(graph.nodes.map(node => node.id));
     detectNewNodes(newIds);
@@ -804,6 +891,7 @@ async function loadGraph() {
             tag: node.tag,
             ghost: node.ghost || false,
             label: node.label,
+            mtime: node.mtime || 0,
             x: finiteNumber(previous.x) ? previous.x : fallback.x,
             y: finiteNumber(previous.y) ? previous.y : fallback.y,
             vx: finiteNumber(previous.vx) ? previous.vx : 0,
@@ -812,6 +900,7 @@ async function loadGraph() {
         : { ...node, ghost: node.ghost || false, ...fallback, vx: 0, vy: 0 };
     });
     links = graph.links;
+    for (let i = 0; i < nodes.length; i++) nodes[i].__index = i;
     for (let i = 0; i < particlePool.length; i++) {
       const p = particlePool[i];
       if (!p.active) continue;
@@ -855,6 +944,8 @@ async function loadGraph() {
       // headless screenshots capture a stable frame on first paint.
       simRunning = false;
       simAlpha = 0;
+      simSharedEnabled = false;
+      simSharedPositions = null;
       sim = { alpha: () => 0, stop: () => {} };
       markConfigChanged();
       invalidateStaticLayer();
@@ -864,9 +955,12 @@ async function loadGraph() {
     ensureSimWorker();
     if (sim) sim.stop();
     simRunning = true;
-    simIdleFrames = 0;
     simAlpha = 1;
     simGeneration += 1;
+    simSharedEnabled = !!(window.crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined');
+    simSharedPositions = simSharedEnabled
+      ? new Float32Array(new SharedArrayBuffer(Float32Array.BYTES_PER_ELEMENT * nodes.length * 2))
+      : null;
     markConfigChanged();
     invalidateStaticLayer();
 
@@ -903,6 +997,7 @@ async function loadGraph() {
       nodes: workerNodes,
       links: workerLinks,
       clusterByTag: !!cfg.clusterByTag,
+      sharedBuffer: simSharedPositions ? simSharedPositions.buffer : null,
       centerX: innerWidth / 2,
       centerY: innerHeight / 2
     });
@@ -930,7 +1025,7 @@ function detectNewNodes(newIds) {
 const flares = new Map();
 
 function getFlareIntensity(nodeId) {
-  if (!cfg.noteFlare || !flares.has(nodeId)) return 0;
+  if (!sceneTuning.noteFlareEnabled || !flares.has(nodeId)) return 0;
   const flare = flares.get(nodeId);
   const age = tick - flare.start;
   if (age > flare.duration) {
@@ -980,13 +1075,13 @@ function drawParticles() {
   for (let i = 0; i < particlePool.length; i++) {
     const particle = particlePool[i];
     if (!particle.active) continue;
-    const source = framePoint(particle.link.source);
-    const target = framePoint(particle.link.target);
-    if (!source || !target) continue;
-    const x = source.x + (target.x - source.x) * particle.t;
-    const y = source.y + (target.y - source.y) * particle.t;
+    const source = particle.link.source;
+    const target = particle.link.target;
+    if (!framePoint(source) || !framePoint(target)) continue;
+    const x = source.__fx + (target.__fx - source.__fx) * particle.t;
+    const y = source.__fy + (target.__fy - source.__fy) * particle.t;
     if (!finiteNumber(x) || !finiteNumber(y)) continue;
-    const color = cfg.edgeColoring ? edgeColor(particle.link) : cfg.accent;
+    const color = sceneTuning.edgeColoringEnabled ? edgeColor(particle.link) : cfg.accent;
     const [r, g, b] = hexToRGB(color);
     const fade = particle.t < 0.1 ? particle.t / 0.1 : particle.t > 0.88 ? (1 - particle.t) / 0.12 : 1;
     ctx.beginPath();
@@ -1001,8 +1096,7 @@ function buildClusterHalos() {
   const clusters = new Map();
   nodes.forEach(node => {
     if (!node.tag) return;
-    const point = framePoint(node);
-    if (!point) return;
+    if (!framePoint(node)) return;
     if (!clusters.has(node.tag)) {
       clusters.set(node.tag, {
         tag: node.tag,
@@ -1010,20 +1104,20 @@ function buildClusterHalos() {
         count: 0,
         sumX: 0,
         sumY: 0,
-        minX: point.x,
-        maxX: point.x,
-        minY: point.y,
-        maxY: point.y
+        minX: node.__fx,
+        maxX: node.__fx,
+        minY: node.__fy,
+        maxY: node.__fy
       });
     }
     const cluster = clusters.get(node.tag);
     cluster.count += 1;
-    cluster.sumX += point.x;
-    cluster.sumY += point.y;
-    cluster.minX = Math.min(cluster.minX, point.x);
-    cluster.maxX = Math.max(cluster.maxX, point.x);
-    cluster.minY = Math.min(cluster.minY, point.y);
-    cluster.maxY = Math.max(cluster.maxY, point.y);
+    cluster.sumX += node.__fx;
+    cluster.sumY += node.__fy;
+    cluster.minX = Math.min(cluster.minX, node.__fx);
+    cluster.maxX = Math.max(cluster.maxX, node.__fx);
+    cluster.minY = Math.min(cluster.minY, node.__fy);
+    cluster.maxY = Math.max(cluster.maxY, node.__fy);
   });
   return Array.from(clusters.values())
     .filter(cluster => cluster.count >= 3)
@@ -1039,7 +1133,7 @@ function buildClusterHalos() {
 }
 
 function drawBackgroundGradient(g) {
-  if (!cfg.backgroundGradient) return;
+  if (!sceneTuning.backgroundGradientEnabled) return;
   const [br, bgg, bb] = hexToRGB(cfg.background);
   const [ar, ag, ab] = hexToRGB(cfg.accent);
   const cx = innerWidth / 2;
@@ -1078,7 +1172,7 @@ function drawClusterHalos(g) {
 }
 
 function drawEdges() {
-  const style = cfg.edgeStyle || 'line';
+  const style = sceneTuning.edgeStyle || cfg.edgeStyle || 'line';
   if (style === 'none') return;
   const edgeCap = sceneTuning.maxRenderedNodes || 0;
   const cullActive = __cullFrame === tick;
@@ -1087,33 +1181,43 @@ function drawEdges() {
     const link = links[i];
     if (edgeCap && (link.source.__renderable === false || link.target.__renderable === false)) continue;
     if (cullActive && link.source.__vFrame !== tick && link.target.__vFrame !== tick) continue;
-    const source = framePoint(link.source);
-    const target = framePoint(link.target);
-    if (!source || !target) continue;
+    if (!framePoint(link.source) || !framePoint(link.target)) continue;
     const importance = Math.max(link.source.importance || 0, link.target.importance || 0);
     let alpha = cfg.linkOpacity * sceneTuning.linkOpacityScale * (0.3 + importance * 0.7);
     let lineWidth = 0.4 + importance * 0.6;
-    if (cfg.depthOfField) {
-      const avgDist = (distFromCenterPoint(source.x, source.y) + distFromCenterPoint(target.x, target.y)) / 2;
+    if (sceneTuning.depthOfFieldEnabled) {
+      const avgDist = (distFromCenterPoint(link.source.__fx, link.source.__fy) + distFromCenterPoint(link.target.__fx, link.target.__fy)) / 2;
       const dofMultiplier = 1 - avgDist * 0.5;
       alpha *= dofMultiplier;
       lineWidth *= dofMultiplier;
     }
     const color = edgeColor(link);
-    let group = groups.get(color);
-    if (!group) { group = []; groups.set(color, group); }
-    group.push(source.x, source.y, target.x, target.y, alpha, lineWidth);
+    const alphaBucket = Math.max(1, Math.min(8, Math.round(alpha * 8)));
+    const widthBucket = lineWidth < 0.75 ? 0.6 : lineWidth < 1.1 ? 0.95 : 1.3;
+    const key = `${color}|${alphaBucket}|${widthBucket}|${style}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { color, alpha: alphaBucket / 8, lineWidth: widthBucket, segments: [] };
+      groups.set(key, group);
+    }
+    group.segments.push(
+      link.source.__fx,
+      link.source.__fy,
+      link.target.__fx,
+      link.target.__fy
+    );
   }
   const isCurve = style === 'curve';
-  for (const [color, flat] of groups) {
-    ctx.strokeStyle = color;
-    for (let i = 0; i < flat.length; i += 6) {
-      const a = flat[i + 4];
-      if (a <= 0) continue;
-      ctx.globalAlpha = Math.min(1, a);
-      ctx.lineWidth = flat[i + 5];
-      const x1 = flat[i], y1 = flat[i + 1], x2 = flat[i + 2], y2 = flat[i + 3];
-      ctx.beginPath();
+  for (const [, group] of groups) {
+    ctx.strokeStyle = group.color;
+    ctx.globalAlpha = Math.min(1, group.alpha);
+    ctx.lineWidth = group.lineWidth;
+    ctx.beginPath();
+    for (let i = 0; i < group.segments.length; i += 4) {
+      const x1 = group.segments[i];
+      const y1 = group.segments[i + 1];
+      const x2 = group.segments[i + 2];
+      const y2 = group.segments[i + 3];
       ctx.moveTo(x1, y1);
       if (isCurve) {
         // Quadratic curve with a perpendicular offset so clustered groups
@@ -1130,8 +1234,8 @@ function drawEdges() {
       } else {
         ctx.lineTo(x2, y2);
       }
-      ctx.stroke();
     }
+    ctx.stroke();
   }
   ctx.globalAlpha = 1;
 }
@@ -1147,15 +1251,14 @@ function drawNodes() {
     const node = nodes[i];
     if (cap && node.__renderable === false) continue;
     if (cullActive && node.__vFrame !== tick) continue;
-    const point = framePoint(node);
-    if (!point) continue;
+    if (!framePoint(node)) continue;
     const color = nodeColor(node);
     const importance = node.importance || 0;
     const pulse = Math.sin(tick * sceneTuning.motion.pulseSpeed + node.x * 0.004 + node.y * 0.003) * 0.5 + 0.5;
     const ghostDim = node.ghost ? 0.35 : 1;
     let dofScale = 1, dofAlpha = 1;
-    if (cfg.depthOfField) {
-      const distance = distFromCenterPoint(point.x, point.y);
+    if (sceneTuning.depthOfFieldEnabled) {
+      const distance = distFromCenterPoint(node.__fx, node.__fy);
       dofScale = 1 - distance * 0.3;
       dofAlpha = 1 - distance * 0.4;
     }
@@ -1167,7 +1270,7 @@ function drawNodes() {
       group = { low: [], high: [] };
       groups.set(color, group);
     }
-    const item = { node, px: point.x, py: point.y, importance, pulse, ghostDim, dofAlpha, flare, radius };
+    const item = { node, px: node.__fx, py: node.__fy, importance, pulse, ghostDim, dofAlpha, flare, radius };
     (highPass ? group.high : group.low).push(item);
   }
 
@@ -1198,7 +1301,8 @@ function drawNodes() {
   }
 
   const drawCoreList = (list, cr, cg, cb, baseColor) => {
-    let fillSet = false;
+    const coreBatches = new Map();
+    const highlightBatches = new Map();
     for (let i = 0; i < list.length; i++) {
       const it = list[i];
       const coreAlpha = Math.min(1,
@@ -1211,17 +1315,29 @@ function drawNodes() {
           Math.min(255, cb + Math.floor(it.flare * 200)),
           coreAlpha
         );
-        fillSet = false;
+        ctx.beginPath();
+        ctx.arc(it.px, it.py, it.radius, 0, Math.PI * 2);
+        ctx.fill();
       } else {
-        if (!fillSet) { ctx.fillStyle = baseColor; fillSet = true; }
-        ctx.globalAlpha = coreAlpha;
+        const bucket = Math.max(1, Math.min(8, Math.round(coreAlpha * 8)));
+        let batch = coreBatches.get(bucket);
+        if (!batch) {
+          batch = [];
+          coreBatches.set(bucket, batch);
+        }
+        batch.push(it);
       }
-      ctx.beginPath();
-      ctx.arc(it.px, it.py, it.radius, 0, Math.PI * 2);
-      ctx.fill();
-      if (it.flare === 0) ctx.globalAlpha = 1;
 
-      if (!it.node.ghost && (it.importance > 0.3 || it.flare > 0)) {
+      if (!it.node.ghost && it.importance > 0.3 && it.flare === 0) {
+        const hiAlpha = Math.min(1, (0.7 + it.pulse * 0.3) * it.dofAlpha);
+        const hiBucket = Math.max(1, Math.min(8, Math.round(hiAlpha * 8)));
+        let batch = highlightBatches.get(hiBucket);
+        if (!batch) {
+          batch = [];
+          highlightBatches.set(hiBucket, batch);
+        }
+        batch.push(it);
+      } else if (!it.node.ghost && it.flare > 0) {
         ctx.fillStyle = rgba(
           Math.min(255, cr + 80 + Math.floor(it.flare * 175)),
           Math.min(255, cg + 80 + Math.floor(it.flare * 175)),
@@ -1231,9 +1347,39 @@ function drawNodes() {
         ctx.beginPath();
         ctx.arc(it.px, it.py, it.radius * 0.4, 0, Math.PI * 2);
         ctx.fill();
-        fillSet = false;
       }
     }
+
+    for (const [bucket, batch] of coreBatches) {
+      ctx.fillStyle = baseColor;
+      ctx.globalAlpha = bucket / 8;
+      ctx.beginPath();
+      for (let i = 0; i < batch.length; i++) {
+        const it = batch[i];
+        ctx.moveTo(it.px + it.radius, it.py);
+        ctx.arc(it.px, it.py, it.radius, 0, Math.PI * 2);
+      }
+      ctx.fill();
+    }
+
+    const highlightColor = rgba(
+      Math.min(255, cr + 80),
+      Math.min(255, cg + 80),
+      Math.min(255, cb + 80),
+      1
+    );
+    for (const [bucket, batch] of highlightBatches) {
+      ctx.fillStyle = highlightColor;
+      ctx.globalAlpha = bucket / 8;
+      ctx.beginPath();
+      for (let i = 0; i < batch.length; i++) {
+        const it = batch[i];
+        ctx.moveTo(it.px + it.radius * 0.4, it.py);
+        ctx.arc(it.px, it.py, it.radius * 0.4, 0, Math.PI * 2);
+      }
+      ctx.fill();
+    }
+
     ctx.globalAlpha = 1;
   };
 
@@ -1252,32 +1398,28 @@ function drawLabels() {
   const cullActive = __cullFrame === tick;
   const cap = sceneTuning.maxRenderedNodes || 0;
   const placed = [];
-  const candidates = [...nodes]
-    .filter(node => hasPoint(node)
-      && (node.importance || 0) >= sceneTuning.labelMinImportance
-      && !(cap && node.__renderable === false)
-      && !(cullActive && node.__vFrame !== tick))
-    .sort((a, b) => (b.importance || 0) - (a.importance || 0))
-    .slice(0, sceneTuning.labelCount * 3);
 
   let drawn = 0;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  for (const node of candidates) {
+  for (let i = 0; i < labelCandidates.length; i++) {
+    const node = labelCandidates[i];
     if (drawn >= sceneTuning.labelCount) break;
-    const point = framePoint(node);
-    if (!point) continue;
-    const distance = distFromCenterPoint(point.x, point.y);
-    const dofAlpha = cfg.depthOfField ? 1 - distance * 0.4 : 1;
+    if ((node.importance || 0) < sceneTuning.labelMinImportance) continue;
+    if (!(hasPoint(node) && framePoint(node))) continue;
+    if (cap && node.__renderable === false) continue;
+    if (cullActive && node.__vFrame !== tick) continue;
+    const distance = distFromCenterPoint(node.__fx, node.__fy);
+    const dofAlpha = sceneTuning.depthOfFieldEnabled ? 1 - distance * 0.4 : 1;
     if (dofAlpha <= 0.12) continue;
 
-    const label = truncateLabel(node.label || node.id, 28);
-    const fontSize = Math.max(10, 11 + (node.importance || 0) * 5);
+    const label = node.__labelText;
+    const fontSize = node.__labelFontSize;
     ctx.font = `${fontSize}px -apple-system, BlinkMacSystemFont, 'Inter', sans-serif`;
-    const textWidth = ctx.measureText(label).width;
-    const x = point.x;
-    const y = point.y + node.r + 16;
+    const textWidth = node.__labelWidth;
+    const x = node.__fx;
+    const y = node.__fy + node.r + 16;
     const box = {
       x: x - textWidth / 2 - 8,
       y: y - fontSize / 2 - 5,
@@ -1328,9 +1470,64 @@ function draw() {
   drawLabels();
 }
 
-function refreshGraphTimer() {
-  if (graphTimer) clearInterval(graphTimer);
-  graphTimer = setInterval(loadGraph, cfg.refreshMs);
+function stopStateSync() {
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+  if (stateSyncTimer) {
+    clearInterval(stateSyncTimer);
+    stateSyncTimer = null;
+  }
+}
+
+async function pollStateVersions() {
+  const state = await loadJson('/api/state');
+  if (!state) return;
+  if (state.graphVersion && state.graphVersion > lastSeenGraphVersion) {
+    lastSeenGraphVersion = state.graphVersion;
+    await loadGraph({ force: true });
+  }
+  if (state.configVersion && state.configVersion > lastSeenConfigVersion) {
+    lastSeenConfigVersion = state.configVersion;
+    await loadCfg();
+  }
+}
+
+function startStateSync() {
+  stopStateSync();
+  if (SYNTHETIC_SIZE > 0) return;
+  if ('EventSource' in window) {
+    eventSource = new EventSource('/events');
+    eventSource.addEventListener('hello', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.graphVersion) lastSeenGraphVersion = data.graphVersion;
+        if (data.configVersion) lastSeenConfigVersion = data.configVersion;
+      } catch (err) {}
+    });
+    eventSource.addEventListener('graph', async (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.version) lastSeenGraphVersion = Math.max(lastSeenGraphVersion, data.version);
+      } catch (err) {}
+      await loadGraph({ force: true });
+    });
+    eventSource.addEventListener('config', async (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.version) lastSeenConfigVersion = Math.max(lastSeenConfigVersion, data.version);
+      } catch (err) {}
+      await loadCfg();
+    });
+    eventSource.onerror = () => {
+      if (!eventSource) return;
+      stopStateSync();
+      stateSyncTimer = setInterval(pollStateVersions, Math.max(1000, cfg.refreshMs));
+    };
+    return;
+  }
+  stateSyncTimer = setInterval(pollStateVersions, Math.max(1000, cfg.refreshMs));
 }
 
 function isSceneCalm() {
@@ -1366,7 +1563,7 @@ applyBackground();
 
 (async () => {
   await loadCfg();
-  await loadGraph();
+  await loadGraph({ force: true });
   if (SYNTHETIC_SIZE > 0) {
     if (ONESHOT) {
       // Advance tick a handful of times so pulse/flare feel non-zero, then
@@ -1377,17 +1574,7 @@ applyBackground();
     breathe();
     return;
   }
-  refreshGraphTimer();
+  startStateSync();
   breathe();
-  setInterval(async () => {
-    const previous = JSON.stringify(cfg);
-    await loadCfg();
-    if (JSON.stringify(cfg) !== previous) {
-      markConfigChanged();
-      refreshGraphTimer();
-      lastHash = '';
-      await loadGraph();
-    }
-  }, 2000);
 })();
 </script></body></html>

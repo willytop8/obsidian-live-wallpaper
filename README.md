@@ -88,7 +88,7 @@ Three layers, each ignorant of the others:
 ```
 
 1. **`parser.js`** watches your vault, parses `[[wikilinks]]` and tags from every `.md` file, writes `graph.json`, and serves everything on the local loopback interface (`127.0.0.1:3000` by default).
-2. **`index.html`** loads `graph.json`, runs a d3 force simulation on a fullscreen canvas, polls for updates.
+2. **`index.html`** loads `graph.json`, runs a d3 force simulation on a fullscreen canvas, and updates automatically when your vault changes.
 3. **Plash / Lively** renders the page as your desktop wallpaper.
 
 The clean separation means only the host changes per platform.
@@ -105,7 +105,7 @@ The renderer ships with a local vendored copy of D3, so the wallpaper still work
 | `port` | `3000` | Local HTTP port for the wallpaper server |
 | `accent` | `#7c5cff` | Default node and edge color |
 | `background` | `#0a0a0f` | Canvas background color |
-| `refreshMs` | `5000` | Polling interval in ms (increase for 2000+ notes) |
+| `refreshMs` | `5000` | Fallback refresh interval in ms when live updates are unavailable |
 | `linkOpacity` | `0.18` | Base opacity for graph edges |
 | `nodeGlow` | `true` | Radial glow halo around each node |
 | `glowIntensity` | `1` | Glow halo strength (`0`–`1`); lower for flatter looks |
@@ -178,14 +178,14 @@ Big graphs turn into mush if you render everything. With `autoScaleLargeVaults` 
 | Up to ~350 nodes | Full fidelity — everything on |
 | 350–900 nodes | Fewer particles, softer edges |
 | 900–3,000 nodes | Fewer labels, lower glow, sparser particles |
-| 3,000–10,000 nodes | Glow and halos off, edges thinned, labels only on the biggest hubs |
-| 10,000+ nodes | Particles off, edges sampled, hard cap of 4,000 rendered nodes |
+| 3,000–10,000 nodes | Glow and halos off, labels tighten, depth effects back off, render scale drops to stay smooth |
+| 10,000+ nodes | Particles off, halos off, labels limited to the biggest hubs, render scale drops further, hard cap of about 2,800 rendered nodes |
 
 If you want a tighter ceiling, set `maxRenderedNodes` — least-connected notes drop first.
 
 ### Incremental parsing
 
-The parser fingerprints each `.md` file and skips anything that hasn't actually changed, so editing in Obsidian doesn't cause a full re-scan. Rapid saves are debounced into a single update. The first run still reads the whole vault; everything after that is near-instant.
+The first launch reads your whole vault. After that, normal edits only rebuild the parts of the graph that actually changed, so quick note updates do not trigger a full vault re-scan. Rapid saves are grouped together, and the wallpaper refreshes automatically as those changes land.
 
 ## License
 
