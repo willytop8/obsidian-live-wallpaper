@@ -39,20 +39,29 @@ const PUBLIC_FILES = new Map([
   ['/settings.html', path.join(__dirname, 'settings.html')],
   ['/vendor/d3.min.js', path.join(__dirname, 'vendor', 'd3.min.js')],
   ['/worker.js', path.join(__dirname, 'worker.js')],
-  ['/presets.json', path.join(__dirname, 'presets.json')],
-  ['/graph.json', OUT]
+  ['/presets.json', path.join(__dirname, 'presets.json')]
 ]);
 const DOCS_DIR = path.join(__dirname, 'docs');
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 const MOTION_MODES = new Set(['light', 'balanced', 'showcase']);
 const EDGE_STYLES = new Set(['line', 'curve', 'none']);
 const NODE_COLOR_MODES = new Set(['tag', 'age']);
+const WIKILINK = /\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g;
+const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---/;
+const TAGS_FLOW = /^tags:\s*\[([^\]]*)\]/m;
+const TAGS_BLOCK = /^tags:\s*\r?\n((?:\s*-\s+.+\r?\n?)+)/m;
+const TAGS_INLINE = /(?:^|\s)#([a-zA-Z][\w-/]*)/g;
+const STATIC_CACHE_CONTROL = 'public, max-age=86400';
+const DYNAMIC_CACHE_CONTROL = 'no-cache';
+const EVENT_HEADERS = {
+  'Content-Type': 'text/event-stream',
+  'Cache-Control': 'no-cache',
+  Connection: 'keep-alive'
+};
 
 function noteId(basename, filePath, vaultPath, duplicatedBasenames) {
   if (!duplicatedBasenames.has(basename)) return basename;
   const rel = path.relative(vaultPath, filePath).replace(/\.md$/, '').replace(/\\/g, '/');
-  // Root-level files have no folder separator — prefix with ./ so every
-  // duplicate gets a visually distinct path-based ID
   return rel.includes('/') ? rel : './' + rel;
 }
 
@@ -262,18 +271,6 @@ function writeConfigFile(nextCfg, configPath = cfgPath) {
   fs.renameSync(tmp, configPath);
 }
 
-const crypto = require('crypto');
-
-const WIKILINK = /\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g;
-const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---/;
-const TAGS_FLOW = /^tags:\s*\[([^\]]*)\]/m;
-const TAGS_BLOCK = /^tags:\s*\r?\n((?:\s*-\s+.+\r?\n?)+)/m;
-const TAGS_INLINE = /(?:^|\s)#([a-zA-Z][\w-/]*)/g;
-
-// --- Incremental file cache ---
-// Maps absolute file path → { hash, basename, content, tag, wikilinks[] }
-const fileCache = new Map();
-
 function extractTag(content) {
   const fm = content.match(FRONTMATTER);
   if (fm) {
@@ -297,97 +294,85 @@ function extractTag(content) {
   return null;
 }
 
-function contentHash(content) {
-  return crypto.createHash('md5').update(content).digest('hex');
-}
-
 function extractWikilinks(content) {
   const result = [];
   WIKILINK.lastIndex = 0;
-  let m;
-  while ((m = WIKILINK.exec(content)) !== null) {
-    const tgt = m[1].trim();
-    if (tgt.length > 0) result.push(tgt);
+  let match;
+  while ((match = WIKILINK.exec(content)) !== null) {
+    const target = match[1].trim();
+    if (target) result.push(target);
   }
   return result;
 }
 
-function buildGraph(vaultPath, outPath = OUT, options = {}) {
-  const showUnresolved = options.showUnresolvedLinks !== undefined ? options.showUnresolvedLinks : DEFAULTS.showUnresolvedLinks;
-  const incremental = options.incremental !== false;
+function isMarkdownPath(filePath) {
+  return typeof filePath === 'string' && filePath.endsWith('.md');
+}
 
-  // First pass: collect every .md file and detect which basenames appear more than once
-  const raw = [];
-  const basenameCounts = {};
-  const currentPaths = new Set();
+function hasHiddenSegment(filePath, vaultPath) {
+  const rel = path.relative(vaultPath, filePath);
+  if (!rel || rel.startsWith('..')) return true;
+  return rel.split(path.sep).some(part => part.startsWith('.'));
+}
+
+function parseMarkdownEntry(filePath) {
+  const stat = fs.statSync(filePath);
+  const basename = path.basename(filePath, '.md');
+  const content = fs.readFileSync(filePath, 'utf8');
+  return {
+    path: filePath,
+    basename,
+    mtimeMs: stat.mtimeMs,
+    tag: extractTag(content),
+    wikilinks: extractWikilinks(content)
+  };
+}
+
+function scanVaultEntries(vaultPath) {
+  const entries = new Map();
   (function walk(dir) {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (e.name.startsWith('.')) continue;
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) walk(p);
-      else if (e.name.endsWith('.md')) {
-        const basename = e.name.replace(/\.md$/, '');
-        raw.push({ basename, filePath: p });
-        basenameCounts[basename] = (basenameCounts[basename] || 0) + 1;
-        currentPaths.add(p);
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name.startsWith('.')) continue;
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      } else if (entry.isFile() && entry.name.endsWith('.md')) {
+        entries.set(fullPath, parseMarkdownEntry(fullPath));
       }
     }
   })(vaultPath);
+  return entries;
+}
 
-  // Prune cache entries for deleted files
-  for (const cachedPath of fileCache.keys()) {
-    if (!currentPaths.has(cachedPath)) fileCache.delete(cachedPath);
+function materializeGraph(entries, vaultPath, options = {}) {
+  const showUnresolved = options.showUnresolvedLinks !== undefined
+    ? options.showUnresolvedLinks
+    : DEFAULTS.showUnresolvedLinks;
+  const raw = Array.from(entries.values())
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map(entry => ({ basename: entry.basename, filePath: entry.path, entry }));
+  const basenameCounts = {};
+  for (const item of raw) {
+    basenameCounts[item.basename] = (basenameCounts[item.basename] || 0) + 1;
   }
-
   const duplicatedBasenames = new Set(
-    Object.entries(basenameCounts).filter(([, c]) => c > 1).map(([b]) => b)
+    Object.entries(basenameCounts)
+      .filter(([, count]) => count > 1)
+      .map(([basename]) => basename)
   );
 
-  // Second pass: assign IDs, read content (with incremental caching), extract tags
   const files = {};
   const tags = {};
   const basenameToIds = {};
-  let cacheHits = 0;
-  let cacheMisses = 0;
-  for (const { basename, filePath } of raw) {
+  for (const { basename, filePath, entry } of raw) {
     const id = noteId(basename, filePath, vaultPath, duplicatedBasenames);
-    let content, tag, wikilinks;
-
-    if (incremental) {
-      const cached = fileCache.get(filePath);
-      // Fast check: use mtime+size to skip reading unchanged files
-      let stat;
-      try { stat = fs.statSync(filePath); } catch { continue; }
-      const fingerprint = `${stat.mtimeMs}:${stat.size}`;
-
-      if (cached && cached.fingerprint === fingerprint) {
-        // File unchanged — reuse cached parse results without reading
-        content = cached.content;
-        tag = cached.tag;
-        wikilinks = cached.wikilinks;
-        cacheHits++;
-      } else {
-        // File is new or changed — read and parse
-        content = fs.readFileSync(filePath, 'utf8');
-        tag = extractTag(content);
-        wikilinks = extractWikilinks(content);
-        fileCache.set(filePath, { fingerprint, content, tag, wikilinks, basename, mtimeMs: stat.mtimeMs });
-        cacheMisses++;
-      }
-      files[id] = { content, path: filePath, basename, wikilinks, mtimeMs: stat.mtimeMs };
-      if (tag) tags[id] = tag;
-      if (!basenameToIds[basename]) basenameToIds[basename] = [];
-      basenameToIds[basename].push(id);
-      continue;
-    } else {
-      content = fs.readFileSync(filePath, 'utf8');
-      tag = extractTag(content);
-      wikilinks = extractWikilinks(content);
-    }
-
-    const statNonInc = (() => { try { return fs.statSync(filePath); } catch { return null; } })();
-    files[id] = { content, path: filePath, basename, wikilinks: wikilinks || extractWikilinks(content), mtimeMs: statNonInc ? statNonInc.mtimeMs : 0 };
-    if (tag) tags[id] = tag;
+    files[id] = {
+      path: filePath,
+      basename,
+      wikilinks: entry.wikilinks,
+      mtimeMs: entry.mtimeMs
+    };
+    if (entry.tag) tags[id] = entry.tag;
     if (!basenameToIds[basename]) basenameToIds[basename] = [];
     basenameToIds[basename].push(id);
   }
@@ -404,78 +389,103 @@ function buildGraph(vaultPath, outPath = OUT, options = {}) {
     if (files[id].mtimeMs) node.mtime = files[id].mtimeMs;
     return node;
   });
-  const nodeSet = new Set(nodes.map(n => n.id));
+  const nodeSet = new Set(nodes.map(node => node.id));
   const links = [];
   const linkSet = new Set();
   const ghostIds = new Set();
-  for (const [src, file] of Object.entries(files)) {
-    for (const tgt of file.wikilinks) {
-      // Resolve wikilink by basename — may match multiple IDs if duplicated
-      const targetIds = basenameToIds[tgt] || (nodeSet.has(tgt) ? [tgt] : []);
-      if (targetIds.length === 0 && showUnresolved && tgt.length > 0) {
-        // Unresolved wikilink — create a ghost node
-        if (!ghostIds.has(tgt)) {
-          ghostIds.add(tgt);
-          nodes.push({ id: tgt, ghost: true });
-          nodeSet.add(tgt);
+  for (const [sourceId, file] of Object.entries(files)) {
+    for (const targetBasename of file.wikilinks) {
+      const targetIds = basenameToIds[targetBasename] || (nodeSet.has(targetBasename) ? [targetBasename] : []);
+      if (targetIds.length === 0 && showUnresolved && targetBasename.length > 0) {
+        if (!ghostIds.has(targetBasename)) {
+          ghostIds.add(targetBasename);
+          nodes.push({ id: targetBasename, ghost: true });
+          nodeSet.add(targetBasename);
         }
-        const key = src + '\0' + tgt;
+        const key = sourceId + '\0' + targetBasename;
         if (!linkSet.has(key)) {
           linkSet.add(key);
-          links.push({ source: src, target: tgt });
+          links.push({ source: sourceId, target: targetBasename });
         }
         continue;
       }
       for (const targetId of targetIds) {
-        if (targetId === src) continue;
-        const key = src + '\0' + targetId;
+        if (targetId === sourceId) continue;
+        const key = sourceId + '\0' + targetId;
         if (!linkSet.has(key)) {
           linkSet.add(key);
-          links.push({ source: src, target: targetId });
+          links.push({ source: sourceId, target: targetId });
         }
       }
     }
   }
 
-  // Track discovered tags with counts
   const discoveredTags = {};
   for (const tag of Object.values(tags)) {
     discoveredTags[tag] = (discoveredTags[tag] || 0) + 1;
   }
 
-  const tmp = outPath + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify({ nodes, links }));
-  fs.renameSync(tmp, outPath);
-  const tagged = Object.keys(tags).length;
-  if (incremental && (cacheHits + cacheMisses) > 0) {
-    console.log(`cache: ${cacheHits} unchanged, ${cacheMisses} re-parsed`);
-  }
-  return { nodes, links, tagged, discoveredTags };
+  return {
+    nodes,
+    links,
+    tagged: Object.keys(tags).length,
+    discoveredTags
+  };
 }
 
-// --- HTTP server ---
+function serializeGraph(result) {
+  return JSON.stringify({ nodes: result.nodes, links: result.links });
+}
 
-const MIME = {
-  '.html': 'text/html',
-  '.json': 'application/json',
-  '.js': 'application/javascript',
-  '.css': 'text/css',
-  '.png': 'image/png',
-  '.gif': 'image/gif',
-  '.svg': 'image/svg+xml'
-};
+function writeGraphFile(graphJson, outPath = OUT) {
+  const tmp = outPath + '.tmp';
+  fs.writeFileSync(tmp, graphJson);
+  fs.renameSync(tmp, outPath);
+}
 
-function serveFile(res, filePath) {
+function buildGraph(vaultPath, outPath = OUT, options = {}) {
+  const entries = scanVaultEntries(vaultPath);
+  const result = materializeGraph(entries, vaultPath, options);
+  writeGraphFile(serializeGraph(result), outPath);
+  return result;
+}
+
+function buildSafeConfig(cfg) {
+  const { vaultPath, port, ...safe } = cfg;
+  return safe;
+}
+
+function defaultHeaders(contentType, cacheControl) {
+  return {
+    'Content-Type': contentType,
+    'Cache-Control': cacheControl,
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Embedder-Policy': 'require-corp',
+    'Cross-Origin-Resource-Policy': 'same-origin'
+  };
+}
+
+function serveBuffer(res, body, contentType, cacheControl = DYNAMIC_CACHE_CONTROL) {
+  res.writeHead(200, defaultHeaders(contentType, cacheControl));
+  res.end(body);
+}
+
+function serveFile(res, filePath, cacheControl = STATIC_CACHE_CONTROL) {
   const ext = path.extname(filePath);
+  const mime = {
+    '.html': 'text/html',
+    '.json': 'application/json',
+    '.js': 'application/javascript',
+    '.css': 'text/css',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml'
+  }[ext] || 'application/octet-stream';
   try {
     const data = fs.readFileSync(filePath);
-    res.writeHead(200, {
-      'Content-Type': MIME[ext] || 'application/octet-stream',
-      'Cache-Control': 'no-cache'
-    });
-    res.end(data);
+    serveBuffer(res, data, mime, cacheControl);
   } catch (e) {
-    res.writeHead(404);
+    res.writeHead(404, defaultHeaders('text/plain', DYNAMIC_CACHE_CONTROL));
     res.end('Not found');
   }
 }
@@ -484,12 +494,12 @@ function readBody(req, res) {
   return new Promise((resolve, reject) => {
     let data = '';
     let tooLarge = false;
-    req.on('data', c => {
+    req.on('data', chunk => {
       if (tooLarge) return;
-      data += c;
+      data += chunk;
       if (data.length > 1e6) {
         tooLarge = true;
-        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.writeHead(413, defaultHeaders('application/json', DYNAMIC_CACHE_CONTROL));
         res.end(JSON.stringify({ error: 'request body too large' }));
         req.destroy();
         reject(new Error('request body too large'));
@@ -500,26 +510,116 @@ function readBody(req, res) {
   });
 }
 
+function broadcastEvent(state, event, payload) {
+  if (!state.eventClients || state.eventClients.size === 0) return;
+  const body = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const client of state.eventClients) {
+    try {
+      client.write(body);
+    } catch (e) {
+      state.eventClients.delete(client);
+    }
+  }
+}
+
+function rebuildGraphState(state, options = {}) {
+  const result = materializeGraph(state.entries, state.cfg.vaultPath, {
+    showUnresolvedLinks: state.cfg.showUnresolvedLinks
+  });
+  state.discoveredTags = result.discoveredTags;
+  state.graphJson = serializeGraph(result);
+  state.graphVersion = (state.graphVersion || 0) + 1;
+  if (options.writeToDisk !== false) {
+    writeGraphFile(state.graphJson, state.outPath);
+  }
+  const ghostCount = result.nodes.filter(node => node.ghost).length;
+  const ghostMsg = ghostCount > 0 ? `, ${ghostCount} unresolved` : '';
+  console.log(`graph: ${result.nodes.length} nodes, ${result.links.length} links, ${result.tagged} tagged${ghostMsg}`);
+  return result;
+}
+
+function applyFsEventToState(state, event, filePath) {
+  if (typeof filePath !== 'string') return false;
+  if (!filePath.startsWith(state.cfg.vaultPath)) return false;
+
+  if (event === 'unlinkDir') {
+    let removed = false;
+    for (const existingPath of state.entries.keys()) {
+      if (existingPath === filePath || existingPath.startsWith(filePath + path.sep)) {
+        state.entries.delete(existingPath);
+        removed = true;
+      }
+    }
+    return removed;
+  }
+
+  if (!isMarkdownPath(filePath) || hasHiddenSegment(filePath, state.cfg.vaultPath)) {
+    return false;
+  }
+
+  if (event === 'unlink') {
+    return state.entries.delete(filePath);
+  }
+
+  if (event !== 'add' && event !== 'change') {
+    return false;
+  }
+
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+    return false;
+  }
+
+  const nextEntry = parseMarkdownEntry(filePath);
+  const prev = state.entries.get(filePath);
+  state.entries.set(filePath, nextEntry);
+  if (!prev) return true;
+  return prev.mtimeMs !== nextEntry.mtimeMs
+    || prev.tag !== nextEntry.tag
+    || prev.basename !== nextEntry.basename
+    || prev.wikilinks.length !== nextEntry.wikilinks.length
+    || prev.wikilinks.some((link, index) => link !== nextEntry.wikilinks[index]);
+}
+
 function createRequestHandler(state) {
-  const publicFiles = new Map(PUBLIC_FILES);
-  publicFiles.set('/graph.json', state.outPath);
+  if (!state.eventClients) state.eventClients = new Set();
+  if (!state.safeConfig) state.safeConfig = buildSafeConfig(state.cfg);
+  if (!state.graphVersion) state.graphVersion = 1;
+  if (!state.configVersion) state.configVersion = 1;
 
   return async (req, res) => {
-    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, defaultHeaders('text/plain', DYNAMIC_CACHE_CONTROL));
+      res.end();
+      return;
+    }
 
     const requestUrl = new URL(req.url, 'http://127.0.0.1');
     const url = requestUrl.pathname;
 
     if (url === '/favicon.ico') {
-      res.writeHead(204);
+      res.writeHead(204, defaultHeaders('text/plain', DYNAMIC_CACHE_CONTROL));
       res.end();
       return;
     }
 
+    if (url === '/events' && req.method === 'GET') {
+      res.writeHead(200, { ...defaultHeaders('text/event-stream', DYNAMIC_CACHE_CONTROL), ...EVENT_HEADERS });
+      res.write(`event: hello\ndata: ${JSON.stringify({ graphVersion: state.graphVersion, configVersion: state.configVersion })}\n\n`);
+      state.eventClients.add(res);
+      req.on('close', () => state.eventClients.delete(res));
+      return;
+    }
+
+    if (url === '/api/state' && req.method === 'GET') {
+      serveBuffer(res, JSON.stringify({
+        graphVersion: state.graphVersion,
+        configVersion: state.configVersion
+      }), 'application/json');
+      return;
+    }
+
     if (url === '/api/config' && req.method === 'GET') {
-      const { vaultPath, port, ...safe } = state.cfg;
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(safe));
+      serveBuffer(res, JSON.stringify(state.safeConfig), 'application/json');
       return;
     }
 
@@ -530,12 +630,17 @@ function createRequestHandler(state) {
         const updated = { ...state.cfg, ...patch, vaultPath: state.cfg.vaultPath, port: state.cfg.port };
         writeConfigFile(updated, state.configPath);
         state.cfg = updated;
-        const { vaultPath, port, ...safe } = updated;
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(safe));
+        state.safeConfig = buildSafeConfig(updated);
+        state.configVersion += 1;
+        serveBuffer(res, JSON.stringify(state.safeConfig), 'application/json');
+        broadcastEvent(state, 'config', { version: state.configVersion });
+        if (Object.prototype.hasOwnProperty.call(patch, 'showUnresolvedLinks')) {
+          rebuildGraphState(state);
+          broadcastEvent(state, 'graph', { version: state.graphVersion });
+        }
       } catch (e) {
         if (!res.writableEnded) {
-          res.writeHead(400);
+          res.writeHead(400, defaultHeaders('application/json', DYNAMIC_CACHE_CONTROL));
           res.end(JSON.stringify({ error: e.message }));
         }
       }
@@ -543,12 +648,18 @@ function createRequestHandler(state) {
     }
 
     if (url === '/api/tags' && req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(state.discoveredTags));
+      serveBuffer(res, JSON.stringify(state.discoveredTags || {}), 'application/json');
       return;
     }
 
-    // Serve /docs/presets/*.png thumbnails for the theme picker.
+    if (url === '/graph.json' && req.method === 'GET') {
+      const graphJson = state.graphJson || (state.outPath && fs.existsSync(state.outPath)
+        ? fs.readFileSync(state.outPath, 'utf8')
+        : JSON.stringify({ nodes: [], links: [] }));
+      serveBuffer(res, graphJson, 'application/json');
+      return;
+    }
+
     if (url.startsWith('/docs/') && req.method === 'GET') {
       const rel = url.slice('/docs/'.length).replace(/\.\./g, '');
       const abs = path.join(DOCS_DIR, rel);
@@ -558,13 +669,14 @@ function createRequestHandler(state) {
       }
     }
 
-    const filePath = publicFiles.get(url);
+    const filePath = PUBLIC_FILES.get(url);
     if (!filePath) {
-      res.writeHead(404);
+      res.writeHead(404, defaultHeaders('text/plain', DYNAMIC_CACHE_CONTROL));
       res.end('Not found');
       return;
     }
-    serveFile(res, filePath);
+    const cacheControl = path.extname(filePath) === '.html' ? DYNAMIC_CACHE_CONTROL : STATIC_CACHE_CONTROL;
+    serveFile(res, filePath, cacheControl);
   };
 }
 
@@ -575,20 +687,26 @@ function startApp(options = {}) {
     console.error('Missing config.json. Run: cp config.example.json config.json');
     process.exit(1);
   }
+
+  const cfg = readConfigFile(configPath);
   const state = {
-    cfg: readConfigFile(configPath),
+    cfg,
+    safeConfig: buildSafeConfig(cfg),
     configPath,
     outPath,
-    discoveredTags: {}
+    discoveredTags: {},
+    entries: scanVaultEntries(cfg.vaultPath),
+    graphJson: '',
+    graphVersion: 0,
+    configVersion: 1,
+    eventClients: new Set()
   };
+
   const server = http.createServer(createRequestHandler(state));
 
   const rebuild = () => {
-    const result = buildGraph(state.cfg.vaultPath, state.outPath, { showUnresolvedLinks: state.cfg.showUnresolvedLinks });
-    state.discoveredTags = result.discoveredTags;
-    const ghostCount = result.nodes.filter(n => n.ghost).length;
-    const ghostMsg = ghostCount > 0 ? `, ${ghostCount} unresolved` : '';
-    console.log(`graph: ${result.nodes.length} nodes, ${result.links.length} links, ${result.tagged} tagged${ghostMsg}`);
+    const result = rebuildGraphState(state);
+    broadcastEvent(state, 'graph', { version: state.graphVersion });
     return result;
   };
 
@@ -599,11 +717,8 @@ function startApp(options = {}) {
     process.exit(1);
   }
 
-  // Debounce rebuild so rapid file saves (e.g. batch renames, sync)
-  // collapse into a single parse instead of hammering the vault
   let debounceTimer = null;
-  const DEBOUNCE_MS = 500;
-
+  const DEBOUNCE_MS = 400;
   const debouncedRebuild = () => {
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
@@ -622,8 +737,15 @@ function startApp(options = {}) {
     awaitWriteFinish: { stabilityThreshold: 300 }
   });
 
-  watcher.on('all', debouncedRebuild)
-  .on('error', e => {
+  watcher.on('all', (event, filePath) => {
+    try {
+      if (applyFsEventToState(state, event, filePath)) {
+        debouncedRebuild();
+      }
+    } catch (e) {
+      console.error(`watch update failed: ${e.message}`);
+    }
+  }).on('error', e => {
     console.error('watcher error:', e.message);
   });
 

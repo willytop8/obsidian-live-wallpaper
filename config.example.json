@@ -21,9 +21,5 @@
   "noteFlare": true,
   "autoScaleLargeVaults": true,
   "showUnresolvedLinks": true,
-  "tagColors": {
-    "project": "#00ffd5",
-    "idea": "#ff6b9d",
-    "reference": "#ffa94d"
-  }
+  "tagColors": {}
 }
