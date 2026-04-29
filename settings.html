@@ -12,7 +12,11 @@
   }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); padding: 24px; max-width: 640px; margin: 0 auto; padding-bottom: 60px; }
   h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
-  .subtitle { color: var(--dim); font-size: 13px; margin-bottom: 32px; }
+  .subtitle { color: var(--dim); font-size: 13px; }
+  .header-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 32px; }
+  .conn-status { font-size: 12px; color: var(--dim); }
+  .conn-status.connected { color: #50c878; }
+  .conn-status.disconnected { color: #ff6b6b; opacity: 0.7; }
 
   .section { margin-bottom: 28px; }
   .section-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); margin-bottom: 12px; }
@@ -50,6 +54,9 @@
   .preset .meta .name { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
   .preset .meta .desc { font-size: 11px; color: var(--dim); line-height: 1.35; }
 
+  .reset-btn { margin-top: 10px; width: 100%; padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); color: var(--dim); font-size: 13px; cursor: pointer; text-align: center; transition: border-color 0.15s, color 0.15s; font: inherit; }
+  .reset-btn:hover { border-color: var(--accent); color: var(--text); }
+
   .tag-list { display: flex; flex-direction: column; gap: 0; }
   .tag-row { display: flex; align-items: center; padding: 10px 16px; background: var(--surface); border: 1px solid var(--border); margin-bottom: -1px; gap: 12px; }
   .tag-row:first-child { border-radius: var(--radius) var(--radius) 0 0; }
@@ -70,11 +77,15 @@
 <body>
 
 <h1>Wallpaper Settings</h1>
-<p class="subtitle">Changes apply to the wallpaper in ~2 seconds.</p>
+<div class="header-bar">
+  <p class="subtitle">Changes apply to the wallpaper in ~2 seconds.</p>
+  <span class="conn-status" id="connStatus"></span>
+</div>
 
 <div class="section">
   <div class="section-title">Presets</div>
   <div class="presets" id="presets"></div>
+  <button class="reset-btn" id="resetDefaults">Reset to defaults</button>
 </div>
 
 <div class="section">
@@ -94,6 +105,32 @@
   <div class="row">
     <div><label>Node glow</label><div class="hint">Radial halo around each node</div></div>
     <label class="toggle"><input type="checkbox" id="nodeGlow" checked><span class="slider"></span></label>
+  </div>
+  <div class="row">
+    <div><label>Glow intensity</label></div>
+    <div class="controls">
+      <input type="range" id="glowIntensity" min="0" max="100" value="100">
+      <span class="val" id="glowIntensityVal">1.00</span>
+    </div>
+  </div>
+  <div class="row">
+    <div><label>Edge style</label></div>
+    <div class="controls">
+      <select id="edgeStyle">
+        <option value="line">Line</option>
+        <option value="curve">Curve</option>
+        <option value="none">None</option>
+      </select>
+    </div>
+  </div>
+  <div class="row">
+    <div><label>Color mode</label><div class="hint">Age mode: fresh = green, 1+ year old = red.</div></div>
+    <div class="controls">
+      <select id="nodeColorMode">
+        <option value="tag">By tag</option>
+        <option value="age">By age</option>
+      </select>
+    </div>
   </div>
   <div class="row">
     <div><label>Edge coloring</label><div class="hint">Edges inherit their source node's tag color</div></div>
@@ -198,7 +235,7 @@
     </div>
   </div>
   <div class="row">
-    <div><label>Refresh interval</label><div class="hint">How often the wallpaper checks for vault changes</div></div>
+    <div><label>Refresh interval</label><div class="hint">Polling fallback interval — live updates via SSE are instant when available</div></div>
     <div class="controls">
       <input type="number" id="refreshMs" min="1000" max="60000" step="1000" value="5000">
       <span class="val">ms</span>
@@ -217,13 +254,26 @@
 const API = window.location.origin;
 let cfg = {};
 let allTags = {};
-
 let PRESETS = [];
+let presetsListenerActive = false;
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 function applyForm() {
   document.getElementById('accent').value = cfg.accent ?? '#7c5cff';
   document.getElementById('background').value = cfg.background ?? '#0a0a0f';
   document.getElementById('nodeGlow').checked = cfg.nodeGlow !== false;
+  document.getElementById('glowIntensity').value = Math.round((cfg.glowIntensity ?? 1) * 100);
+  document.getElementById('glowIntensityVal').textContent = (cfg.glowIntensity ?? 1).toFixed(2);
+  document.getElementById('edgeStyle').value = cfg.edgeStyle ?? 'line';
+  document.getElementById('nodeColorMode').value = cfg.nodeColorMode ?? 'tag';
   document.getElementById('edgeColoring').checked = cfg.edgeColoring !== false;
   document.getElementById('showUnresolvedLinks').checked = cfg.showUnresolvedLinks !== false;
   document.getElementById('clusterByTag').checked = cfg.clusterByTag !== false;
@@ -248,6 +298,12 @@ function applyForm() {
   document.getElementById('refreshMs').value = cfg.refreshMs ?? 5000;
 }
 
+function setConnStatus(connected) {
+  const el = document.getElementById('connStatus');
+  el.textContent = connected ? '● Connected' : '○ Disconnected';
+  el.className = 'conn-status ' + (connected ? 'connected' : 'disconnected');
+}
+
 function status(msg, type) {
   const el = document.getElementById('status');
   el.textContent = msg;
@@ -256,13 +312,41 @@ function status(msg, type) {
   el._t = setTimeout(() => el.className = 'status', 2000);
 }
 
+function detectActivePreset() {
+  if (!PRESETS.length || !Object.keys(cfg).length) return;
+  const presetEls = document.querySelectorAll('.preset');
+  PRESETS.forEach((p, i) => {
+    const match = Object.entries(p.config).every(([k, v]) => {
+      const cfgVal = cfg[k];
+      if (k === 'tagColors') {
+        const pTc = v || {};
+        const cTc = cfgVal || {};
+        const pKeys = Object.keys(pTc);
+        const cKeys = Object.keys(cTc);
+        if (pKeys.length !== cKeys.length) return false;
+        return pKeys.every(tag => pTc[tag] === cTc[tag]);
+      }
+      if (typeof v === 'number' && typeof cfgVal === 'number') {
+        return Math.abs(v - cfgVal) < 0.001;
+      }
+      return cfgVal === v;
+    });
+    if (presetEls[i]) presetEls[i].classList.toggle('active', match);
+  });
+}
+
 async function loadConfig() {
   try {
     const r = await fetch(API + '/api/config');
     if (!r.ok) throw new Error(`config load failed: ${r.status}`);
     cfg = await r.json();
     applyForm();
-  } catch (e) { status('Failed to load config', 'err'); }
+    setConnStatus(true);
+    detectActivePreset();
+  } catch (e) {
+    status('Failed to load config', 'err');
+    setConnStatus(false);
+  }
 }
 
 async function loadTags() {
@@ -285,6 +369,7 @@ async function save(updates) {
     if (!r.ok) throw new Error(data.error || `save failed: ${r.status}`);
     cfg = { ...cfg, ...data };
     status('Saved', 'ok');
+    detectActivePreset();  // add this line
     return true;
   } catch (e) {
     status(e.message || 'Save failed', 'err');
@@ -299,26 +384,30 @@ function renderPresets() {
     return;
   }
   el.innerHTML = PRESETS.map(p => {
+    const safeName = escapeHtml(p.name);
     const thumb = p.thumbnail
-      ? `<span class="thumb" style="background-image:url('${p.thumbnail}');background-color:${p.background}"></span>`
-      : `<span class="thumb fallback" style="background-color:${p.background};color:${p.accent}">${p.name}</span>`;
-    const desc = p.description ? `<div class="desc">${p.description}</div>` : '';
-    return `<button class="preset" data-name="${p.name}">
+      ? `<span class="thumb" style="background-image:url('${escapeHtml(p.thumbnail)}');background-color:${escapeHtml(p.background)}"></span>`
+      : `<span class="thumb fallback" style="background-color:${escapeHtml(p.background)};color:${escapeHtml(p.accent)}">${safeName}</span>`;
+    const desc = p.description ? `<div class="desc">${escapeHtml(p.description)}</div>` : '';
+    return `<button class="preset" data-name="${safeName}">
       ${thumb}
-      <div class="meta"><div class="name">${p.name}</div>${desc}</div>
+      <div class="meta"><div class="name">${safeName}</div>${desc}</div>
     </button>`;
   }).join('');
-  el.addEventListener('click', async e => {
-    const btn = e.target.closest('.preset');
-    if (!btn) return;
-    const preset = PRESETS.find(p => p.name === btn.dataset.name);
-    if (!preset) return;
-    if (await save(preset.config)) {
-      applyForm();
-      renderTags();
-      el.querySelectorAll('.preset').forEach(b => b.classList.toggle('active', b === btn));
-    }
-  }, { once: false });
+  if (!presetsListenerActive) {
+    el.addEventListener('click', async e => {
+      const btn = e.target.closest('.preset');
+      if (!btn) return;
+      const preset = PRESETS.find(p => p.name === btn.dataset.name);
+      if (!preset) return;
+      if (await save(preset.config)) {
+        applyForm();
+        renderTags();
+        el.querySelectorAll('.preset').forEach(b => b.classList.toggle('active', b === btn));
+      }
+    });
+    presetsListenerActive = true;
+  }
 }
 
 async function loadPresets() {
@@ -331,6 +420,7 @@ async function loadPresets() {
     status('Failed to load presets', 'err');
   }
   renderPresets();
+  detectActivePreset();
 }
 
 function renderTags() {
@@ -350,11 +440,12 @@ function renderTags() {
 
   el.innerHTML = '<div class="tag-list">' + sorted.map(([tag, count]) => {
     const color = tagColors[tag] || '';
+    const safeTag = escapeHtml(tag);
     return `<div class="tag-row">
-      <input type="color" value="${color || cfg.accent || '#7c5cff'}" data-tag="${tag}" class="tag-color">
-      <span class="tag-name">${tag}</span>
+      <input type="color" value="${escapeHtml(color || cfg.accent || '#7c5cff')}" data-tag="${safeTag}" class="tag-color">
+      <span class="tag-name">${safeTag}</span>
       <span class="tag-count">${count}</span>
-      ${color ? `<button class="tag-remove" data-tag="${tag}" title="Remove color">&times;</button>` : ''}
+      ${color ? `<button class="tag-remove" data-tag="${safeTag}" title="Remove color">&times;</button>` : ''}
     </div>`;
   }).join('') + '</div>';
 
@@ -375,7 +466,7 @@ function renderTags() {
   });
 }
 
-// Bind controls
+// Colors
 document.getElementById('accent').addEventListener('change', e => save({ accent: e.target.value }));
 document.getElementById('background').addEventListener('change', e => save({ background: e.target.value }));
 
@@ -384,9 +475,17 @@ document.getElementById('background').addEventListener('change', e => save({ bac
   document.getElementById(id).addEventListener('change', e => save({ [id]: e.target.checked }));
 });
 
+// Selects
 document.getElementById('motionMode').addEventListener('change', e => save({ motionMode: e.target.value }));
+document.getElementById('edgeStyle').addEventListener('change', e => save({ edgeStyle: e.target.value }));
+document.getElementById('nodeColorMode').addEventListener('change', e => save({ nodeColorMode: e.target.value }));
 
 // Sliders
+document.getElementById('glowIntensity').addEventListener('input', e => {
+  document.getElementById('glowIntensityVal').textContent = (e.target.value / 100).toFixed(2);
+});
+document.getElementById('glowIntensity').addEventListener('change', e => save({ glowIntensity: e.target.value / 100 }));
+
 document.getElementById('linkOpacity').addEventListener('input', e => {
   document.getElementById('linkOpacityVal').textContent = (e.target.value / 100).toFixed(2);
 });
@@ -422,6 +521,24 @@ document.getElementById('maxRenderedNodes').addEventListener('change', e => {
   const v = Math.max(100, Math.min(100000, parseInt(e.target.value) || 5000));
   e.target.value = v;
   save({ maxRenderedNodes: v });
+});
+
+// Reset to defaults
+document.getElementById('resetDefaults').addEventListener('click', async () => {
+  const defaults = {
+    accent: '#7c5cff', background: '#0a0a0f', linkOpacity: 0.18,
+    nodeGlow: true, glowIntensity: 1, edgeStyle: 'line', nodeColorMode: 'tag',
+    edgeColoring: true, particles: true, particleSpeed: 1, particleDensity: 0.3,
+    motionMode: 'balanced', clusterByTag: true, clusterHalos: true,
+    backgroundGradient: true, hubLabels: false, hubLabelCount: 5,
+    labelMinImportance: 0.22, depthOfField: true, noteFlare: true,
+    autoScaleLargeVaults: true, showUnresolvedLinks: true, maxRenderedNodes: 5000,
+    refreshMs: 5000, tagColors: {}
+  };
+  if (await save(defaults)) {
+    applyForm();
+    renderTags();
+  }
 });
 
 loadPresets();

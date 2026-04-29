@@ -5,6 +5,8 @@ const chokidar = require('chokidar');
 
 const cfgPath = path.join(__dirname, 'config.json');
 const OUT = path.join(__dirname, 'graph.json');
+// Keep in sync with DEFAULTS in index.html.
+// When adding a field here, add it there too.
 const DEFAULTS = {
   accent: '#7c5cff',
   background: '#0a0a0f',
@@ -27,6 +29,7 @@ const DEFAULTS = {
   noteFlare: true,
   autoScaleLargeVaults: true,
   showUnresolvedLinks: true,
+  fastHash: true,
   glowIntensity: 1,
   edgeStyle: 'line',
   nodeColorMode: 'tag',
@@ -42,6 +45,7 @@ const PUBLIC_FILES = new Map([
   ['/presets.json', path.join(__dirname, 'presets.json')]
 ]);
 const DOCS_DIR = path.join(__dirname, 'docs');
+const DOCS_ALLOWED_EXTS = new Set(['.png', '.gif', '.jpg', '.svg', '.md', '.txt']);
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 const MOTION_MODES = new Set(['light', 'balanced', 'showcase']);
 const EDGE_STYLES = new Set(['line', 'curve', 'none']);
@@ -159,6 +163,7 @@ function sanitizePersistedConfig(raw) {
     noteFlare: raw.noteFlare === undefined ? DEFAULTS.noteFlare : validateBoolean(raw.noteFlare, 'noteFlare'),
     autoScaleLargeVaults: raw.autoScaleLargeVaults === undefined ? DEFAULTS.autoScaleLargeVaults : validateBoolean(raw.autoScaleLargeVaults, 'autoScaleLargeVaults'),
     showUnresolvedLinks: raw.showUnresolvedLinks === undefined ? DEFAULTS.showUnresolvedLinks : validateBoolean(raw.showUnresolvedLinks, 'showUnresolvedLinks'),
+    fastHash: raw.fastHash === undefined ? DEFAULTS.fastHash : validateBoolean(raw.fastHash, 'fastHash'),
     glowIntensity: raw.glowIntensity === undefined ? 1 : validateNumber(raw.glowIntensity, 'glowIntensity', 0, 1),
     edgeStyle: raw.edgeStyle === undefined ? 'line' : validateEnum(raw.edgeStyle, 'edgeStyle', EDGE_STYLES),
     nodeColorMode: raw.nodeColorMode === undefined ? 'tag' : validateEnum(raw.nodeColorMode, 'nodeColorMode', NODE_COLOR_MODES),
@@ -196,6 +201,7 @@ function sanitizeConfigPatch(raw) {
     'noteFlare',
     'autoScaleLargeVaults',
     'showUnresolvedLinks',
+    'fastHash',
     'glowIntensity',
     'edgeStyle',
     'nodeColorMode',
@@ -247,6 +253,9 @@ function sanitizeConfigPatch(raw) {
         break;
       case 'tagColors':
         patch[key] = sanitizeTagColors(value);
+        break;
+      case 'fastHash':
+        patch[key] = validateBoolean(value, key);
         break;
       default:
         patch[key] = validateBoolean(value, key);
@@ -316,16 +325,20 @@ function hasHiddenSegment(filePath, vaultPath) {
 }
 
 function parseMarkdownEntry(filePath) {
-  const stat = fs.statSync(filePath);
-  const basename = path.basename(filePath, '.md');
-  const content = fs.readFileSync(filePath, 'utf8');
-  return {
-    path: filePath,
-    basename,
-    mtimeMs: stat.mtimeMs,
-    tag: extractTag(content),
-    wikilinks: extractWikilinks(content)
-  };
+  try {
+    const stat = fs.statSync(filePath);
+    const basename = path.basename(filePath, '.md');
+    const content = fs.readFileSync(filePath, 'utf8');
+    return {
+      path: filePath,
+      basename,
+      mtimeMs: stat.mtimeMs,
+      tag: extractTag(content),
+      wikilinks: extractWikilinks(content)
+    };
+  } catch (_) {
+    return null;
+  }
 }
 
 function scanVaultEntries(vaultPath) {
@@ -337,7 +350,8 @@ function scanVaultEntries(vaultPath) {
       if (entry.isDirectory()) {
         walk(fullPath);
       } else if (entry.isFile() && entry.name.endsWith('.md')) {
-        entries.set(fullPath, parseMarkdownEntry(fullPath));
+        const parsed = parseMarkdownEntry(fullPath);
+        if (parsed) entries.set(fullPath, parsed);
       }
     }
   })(vaultPath);
@@ -570,6 +584,7 @@ function applyFsEventToState(state, event, filePath) {
   }
 
   const nextEntry = parseMarkdownEntry(filePath);
+  if (!nextEntry) return false;
   const prev = state.entries.get(filePath);
   state.entries.set(filePath, nextEntry);
   if (!prev) return true;
@@ -624,6 +639,11 @@ function createRequestHandler(state) {
     }
 
     if (url === '/api/config' && req.method === 'POST') {
+      if (req.headers['content-type'] !== 'application/json') {
+        res.writeHead(415, defaultHeaders('application/json', DYNAMIC_CACHE_CONTROL));
+        res.end(JSON.stringify({ error: 'Content-Type must be application/json' }));
+        return;
+      }
       try {
         const body = JSON.parse(await readBody(req, res));
         const patch = sanitizeConfigPatch(body);
@@ -663,7 +683,12 @@ function createRequestHandler(state) {
     if (url.startsWith('/docs/') && req.method === 'GET') {
       const rel = url.slice('/docs/'.length).replace(/\.\./g, '');
       const abs = path.join(DOCS_DIR, rel);
-      if (abs.startsWith(DOCS_DIR) && fs.existsSync(abs) && fs.statSync(abs).isFile()) {
+      if (
+        (abs === DOCS_DIR || abs.startsWith(DOCS_DIR + path.sep)) &&
+        DOCS_ALLOWED_EXTS.has(path.extname(abs)) &&
+        fs.existsSync(abs) &&
+        fs.statSync(abs).isFile()
+      ) {
         serveFile(res, abs);
         return;
       }
@@ -759,6 +784,17 @@ function startApp(options = {}) {
     process.exit(1);
   });
 
+  function shutdown() {
+    watcher.close();
+    for (const client of state.eventClients) {
+      try { client.end(); } catch (_) {}
+    }
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 2000);
+  }
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+
   return { server, watcher, state, rebuild };
 }
 
@@ -775,5 +811,9 @@ module.exports = {
   createRequestHandler,
   readConfigFile,
   writeConfigFile,
-  startApp
+  startApp,
+  scanVaultEntries,
+  materializeGraph,
+  applyFsEventToState,
+  rebuildGraphState
 };

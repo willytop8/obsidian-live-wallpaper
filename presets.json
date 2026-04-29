@@ -27,7 +27,8 @@
       "depthOfField": false,
       "noteFlare": false,
       "autoScaleLargeVaults": true,
-      "maxRenderedNodes": 6000
+      "maxRenderedNodes": 6000,
+      "tagColors": {}
     }
   },
   {
@@ -58,7 +59,8 @@
       "depthOfField": true,
       "noteFlare": true,
       "autoScaleLargeVaults": true,
-      "maxRenderedNodes": 5000
+      "maxRenderedNodes": 5000,
+      "tagColors": {}
     }
   },
   {
@@ -89,7 +91,8 @@
       "depthOfField": true,
       "noteFlare": true,
       "autoScaleLargeVaults": true,
-      "maxRenderedNodes": 5000
+      "maxRenderedNodes": 5000,
+      "tagColors": {}
     }
   },
   {
@@ -120,7 +123,8 @@
       "depthOfField": true,
       "noteFlare": false,
       "autoScaleLargeVaults": true,
-      "maxRenderedNodes": 6000
+      "maxRenderedNodes": 6000,
+      "tagColors": {}
     }
   },
   {
@@ -151,7 +155,8 @@
       "depthOfField": false,
       "noteFlare": false,
       "autoScaleLargeVaults": true,
-      "maxRenderedNodes": 5000
+      "maxRenderedNodes": 5000,
+      "tagColors": {}
     }
   },
   {
@@ -182,7 +187,8 @@
       "depthOfField": true,
       "noteFlare": false,
       "autoScaleLargeVaults": true,
-      "maxRenderedNodes": 5000
+      "maxRenderedNodes": 5000,
+      "tagColors": {}
     }
   },
   {
@@ -213,7 +219,8 @@
       "depthOfField": true,
       "noteFlare": true,
       "autoScaleLargeVaults": true,
-      "maxRenderedNodes": 5000
+      "maxRenderedNodes": 5000,
+      "tagColors": {}
     }
   },
   {
@@ -244,7 +251,8 @@
       "depthOfField": true,
       "noteFlare": true,
       "autoScaleLargeVaults": true,
-      "maxRenderedNodes": 5000
+      "maxRenderedNodes": 5000,
+      "tagColors": {}
     }
   },
   {
@@ -275,7 +283,8 @@
       "depthOfField": true,
       "noteFlare": false,
       "autoScaleLargeVaults": true,
-      "maxRenderedNodes": 5000
+      "maxRenderedNodes": 5000,
+      "tagColors": {}
     }
   },
   {
@@ -306,7 +315,8 @@
       "depthOfField": false,
       "noteFlare": false,
       "autoScaleLargeVaults": true,
-      "maxRenderedNodes": 5000
+      "maxRenderedNodes": 5000,
+      "tagColors": {}
     }
   }
 ]

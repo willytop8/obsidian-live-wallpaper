@@ -11,6 +11,8 @@ const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
 const DEVICE_DPR = window.devicePixelRatio || 1;
 let renderScale = DEVICE_DPR;
 
+// Keep in sync with DEFAULTS in parser.js.
+// When adding a field here, add it there too.
 const DEFAULTS = {
   accent: '#7c5cff',
   background: '#0a0a0f',
@@ -75,6 +77,11 @@ let lastSeenGraphVersion = 0;
 let lastSeenConfigVersion = 0;
 let labelCandidates = [];
 const RGB_CACHE = new Map();
+const edgeGroups = new Map();
+const nodeGroups = new Map();
+let activeParticleCount = 0;
+let cachedHalos = null;
+let cachedHalosForAlpha = -1;
 let staticLayer = null;
 let staticLayerCtx = null;
 let staticLayerDirty = true;
@@ -414,6 +421,7 @@ function refreshSceneTuning() {
   applyRenderableCap();
   rebuildQuadtree();
   refreshDerivedVisuals();
+  cachedHalos = null;
   if (scaleChanged) {
     renderScale = nextScale;
     resize();
@@ -477,7 +485,7 @@ function ensureParticlePool(cap) {
   while (particlePool.length < cap) {
     particlePool.push({ active: false, link: null, t: 0, speed: 0, alpha: 0, size: 0 });
   }
-  if (particlePool.length > cap) particlePool.length = cap;
+  if (particlePool.length > cap) { particlePool.length = cap; activeParticleCount = 0; }
 }
 
 function applyRenderableCap() {
@@ -548,7 +556,7 @@ function getGlowSprite(hex) {
   return sprite;
 }
 
-function invalidateStaticLayer() { staticLayerDirty = true; }
+function invalidateStaticLayer() { staticLayerDirty = true; cachedHalos = null; }
 
 function ensureStaticLayer() {
   const w = Math.max(1, Math.floor(innerWidth * renderScale));
@@ -638,8 +646,12 @@ function refreshDerivedVisuals() {
       : ((node.tag && cfg.tagColors[node.tag]) || cfg.accent);
     node.__labelText = truncateLabel(node.label || node.id, 28);
     node.__labelFontSize = Math.max(10, 11 + (node.importance || 0) * 5);
-    ctx.font = `${node.__labelFontSize}px -apple-system, BlinkMacSystemFont, 'Inter', sans-serif`;
-    node.__labelWidth = ctx.measureText(node.__labelText).width;
+    if (!node.ghost && (node.importance || 0) >= sceneTuning.labelMinImportance) {
+      ctx.font = `${node.__labelFontSize}px -apple-system, BlinkMacSystemFont, 'Inter', sans-serif`;
+      node.__labelWidth = ctx.measureText(node.__labelText).width;
+    } else {
+      node.__labelWidth = 0;
+    }
   }
 
   for (let i = 0; i < links.length; i++) {
@@ -669,18 +681,10 @@ function syncSharedPositions() {
   }
 }
 
-function displayPoint(node) {
-  if (!hasPoint(node)) return null;
-  const motion = sceneTuning.motion;
-  const importance = 0.4 + (node.importance || 0) * 0.8;
-  const xOffset = Math.sin(tick * motion.phaseSpeed + node.id.length * 0.37 + node.x * 0.002) * motion.driftAmp * importance;
-  const yOffset = Math.cos(tick * motion.phaseSpeed * 0.82 + node.id.length * 0.53 + node.y * 0.002) * motion.driftAmp * importance;
-  return { x: node.x + xOffset, y: node.y + yOffset };
-}
-
 function buildFramePoints() {
   if (simSharedEnabled && simRunning) syncSharedPositions();
   const cap = sceneTuning.maxRenderedNodes || 0;
+  const motion = sceneTuning.motion;
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
     node.__vFrame = -1;
@@ -689,15 +693,15 @@ function buildFramePoints() {
       node.__fy = NaN;
       continue;
     }
-    const point = displayPoint(node);
-    node.__fx = point ? point.x : NaN;
-    node.__fy = point ? point.y : NaN;
+    if (!hasPoint(node)) {
+      node.__fx = NaN;
+      node.__fy = NaN;
+      continue;
+    }
+    const importance = 0.4 + (node.importance || 0) * 0.8;
+    node.__fx = node.x + Math.sin(tick * motion.phaseSpeed + node.id.length * 0.37 + node.x * 0.002) * motion.driftAmp * importance;
+    node.__fy = node.y + Math.cos(tick * motion.phaseSpeed * 0.82 + node.id.length * 0.53 + node.y * 0.002) * motion.driftAmp * importance;
   }
-}
-
-function framePoint(node) {
-  if (!node || !finiteNumber(node.__fx) || !finiteNumber(node.__fy)) return null;
-  return node;
 }
 
 function distFromCenterPoint(x, y) {
@@ -730,24 +734,8 @@ async function loadJson(pathname) {
     const response = await fetch(pathname, { cache: 'no-store' });
     if (!response.ok) return null;
     return await response.json();
-  } catch (error) {
-    return new Promise(resolve => {
-      try {
-        const xhr = new XMLHttpRequest();
-        xhr.open('GET', pathname, true);
-        xhr.onload = () => {
-          try {
-            resolve(JSON.parse(xhr.responseText));
-          } catch (parseError) {
-            resolve(null);
-          }
-        };
-        xhr.onerror = () => resolve(null);
-        xhr.send();
-      } catch (xhrError) {
-        resolve(null);
-      }
-    });
+  } catch {
+    return null;
   }
 }
 
@@ -917,7 +905,9 @@ async function loadGraph(options = {}) {
       degree[link.source] = (degree[link.source] || 0) + 1;
       degree[link.target] = (degree[link.target] || 0) + 1;
     });
-    maxDeg = Math.max(1, ...Object.values(degree));
+    let dMax = 1;
+    for (const v of Object.values(degree)) { if (v > dMax) dMax = v; }
+    maxDeg = dMax;
     nodes.forEach(node => {
       const degreeCount = degree[node.id] || 0;
       node.deg = degreeCount;
@@ -1054,6 +1044,7 @@ function spawnParticles() {
     slot.speed = (0.003 + Math.random() * 0.004) * cfg.particleSpeed;
     slot.alpha = (0.28 + Math.random() * 0.35) * sceneTuning.motion.particleAlpha;
     slot.size = 0.9 + Math.random() * 1.1;
+    activeParticleCount++;
     spawned++;
   }
 }
@@ -1066,6 +1057,7 @@ function updateParticles() {
     if (p.t >= 1) {
       p.active = false;
       p.link = null;
+      activeParticleCount--;
     }
   }
 }
@@ -1077,7 +1069,7 @@ function drawParticles() {
     if (!particle.active) continue;
     const source = particle.link.source;
     const target = particle.link.target;
-    if (!framePoint(source) || !framePoint(target)) continue;
+    if (!finiteNumber(source.__fx) || !finiteNumber(source.__fy) || !finiteNumber(target.__fx) || !finiteNumber(target.__fy)) continue;
     const x = source.__fx + (target.__fx - source.__fx) * particle.t;
     const y = source.__fy + (target.__fy - source.__fy) * particle.t;
     if (!finiteNumber(x) || !finiteNumber(y)) continue;
@@ -1093,10 +1085,14 @@ function drawParticles() {
 
 function buildClusterHalos() {
   if (sceneTuning.haloAlpha <= 0) return [];
+  const currentAlpha = simAlpha;
+  if (cachedHalos && Math.abs(currentAlpha - cachedHalosForAlpha) < 0.05) {
+    return cachedHalos;
+  }
   const clusters = new Map();
   nodes.forEach(node => {
     if (!node.tag) return;
-    if (!framePoint(node)) return;
+    if (!finiteNumber(node.__fx) || !finiteNumber(node.__fy)) return;
     if (!clusters.has(node.tag)) {
       clusters.set(node.tag, {
         tag: node.tag,
@@ -1119,7 +1115,7 @@ function buildClusterHalos() {
     cluster.minY = Math.min(cluster.minY, node.__fy);
     cluster.maxY = Math.max(cluster.maxY, node.__fy);
   });
-  return Array.from(clusters.values())
+  cachedHalos = Array.from(clusters.values())
     .filter(cluster => cluster.count >= 3)
     .map(cluster => {
       const centerX = cluster.sumX / cluster.count;
@@ -1130,6 +1126,8 @@ function buildClusterHalos() {
       return { ...cluster, x: centerX, y: centerY, radius };
     })
     .sort((a, b) => a.radius - b.radius);
+  cachedHalosForAlpha = currentAlpha;
+  return cachedHalos;
 }
 
 function drawBackgroundGradient(g) {
@@ -1176,12 +1174,12 @@ function drawEdges() {
   if (style === 'none') return;
   const edgeCap = sceneTuning.maxRenderedNodes || 0;
   const cullActive = __cullFrame === tick;
-  const groups = new Map();
+  edgeGroups.clear();
   for (let i = 0; i < links.length; i += sceneTuning.linkStep) {
     const link = links[i];
     if (edgeCap && (link.source.__renderable === false || link.target.__renderable === false)) continue;
     if (cullActive && link.source.__vFrame !== tick && link.target.__vFrame !== tick) continue;
-    if (!framePoint(link.source) || !framePoint(link.target)) continue;
+    if (!finiteNumber(link.source.__fx) || !finiteNumber(link.source.__fy) || !finiteNumber(link.target.__fx) || !finiteNumber(link.target.__fy)) continue;
     const importance = Math.max(link.source.importance || 0, link.target.importance || 0);
     let alpha = cfg.linkOpacity * sceneTuning.linkOpacityScale * (0.3 + importance * 0.7);
     let lineWidth = 0.4 + importance * 0.6;
@@ -1195,10 +1193,10 @@ function drawEdges() {
     const alphaBucket = Math.max(1, Math.min(8, Math.round(alpha * 8)));
     const widthBucket = lineWidth < 0.75 ? 0.6 : lineWidth < 1.1 ? 0.95 : 1.3;
     const key = `${color}|${alphaBucket}|${widthBucket}|${style}`;
-    let group = groups.get(key);
+    let group = edgeGroups.get(key);
     if (!group) {
       group = { color, alpha: alphaBucket / 8, lineWidth: widthBucket, segments: [] };
-      groups.set(key, group);
+      edgeGroups.set(key, group);
     }
     group.segments.push(
       link.source.__fx,
@@ -1208,7 +1206,7 @@ function drawEdges() {
     );
   }
   const isCurve = style === 'curve';
-  for (const [, group] of groups) {
+  for (const [, group] of edgeGroups) {
     ctx.strokeStyle = group.color;
     ctx.globalAlpha = Math.min(1, group.alpha);
     ctx.lineWidth = group.lineWidth;
@@ -1245,13 +1243,13 @@ function drawNodes() {
   const cullActive = __cullFrame === tick;
   const glowIntensity = clamp(cfg.glowIntensity ?? 1, 0, 1);
   const glowEnabled = sceneTuning.glowEnabled && glowIntensity > 0;
-  const groups = new Map();
+  nodeGroups.clear();
 
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
     if (cap && node.__renderable === false) continue;
     if (cullActive && node.__vFrame !== tick) continue;
-    if (!framePoint(node)) continue;
+    if (!finiteNumber(node.__fx) || !finiteNumber(node.__fy)) continue;
     const color = nodeColor(node);
     const importance = node.importance || 0;
     const pulse = Math.sin(tick * sceneTuning.motion.pulseSpeed + node.x * 0.004 + node.y * 0.003) * 0.5 + 0.5;
@@ -1265,17 +1263,17 @@ function drawNodes() {
     const flare = node.ghost ? 0 : getFlareIntensity(node.id);
     const radius = node.r * dofScale;
     const highPass = importance >= 0.3 || flare > 0;
-    let group = groups.get(color);
+    let group = nodeGroups.get(color);
     if (!group) {
       group = { low: [], high: [] };
-      groups.set(color, group);
+      nodeGroups.set(color, group);
     }
     const item = { node, px: node.__fx, py: node.__fy, importance, pulse, ghostDim, dofAlpha, flare, radius };
     (highPass ? group.high : group.low).push(item);
   }
 
   if (glowEnabled) {
-    for (const [color, group] of groups) {
+    for (const [color, group] of nodeGroups) {
       const sprite = getGlowSprite(color);
       const all = group.low.length + group.high.length;
       if (!all) continue;
@@ -1383,11 +1381,11 @@ function drawNodes() {
     ctx.globalAlpha = 1;
   };
 
-  for (const [color, group] of groups) {
+  for (const [color, group] of nodeGroups) {
     const [cr, cg, cb] = hexToRGB(color);
     drawCoreList(group.low, cr, cg, cb, color);
   }
-  for (const [color, group] of groups) {
+  for (const [color, group] of nodeGroups) {
     const [cr, cg, cb] = hexToRGB(color);
     drawCoreList(group.high, cr, cg, cb, color);
   }
@@ -1407,7 +1405,7 @@ function drawLabels() {
     const node = labelCandidates[i];
     if (drawn >= sceneTuning.labelCount) break;
     if ((node.importance || 0) < sceneTuning.labelMinImportance) continue;
-    if (!(hasPoint(node) && framePoint(node))) continue;
+    if (!finiteNumber(node.__fx) || !finiteNumber(node.__fy)) continue;
     if (cap && node.__renderable === false) continue;
     if (cullActive && node.__vFrame !== tick) continue;
     const distance = distFromCenterPoint(node.__fx, node.__fy);
@@ -1536,14 +1534,8 @@ function isSceneCalm() {
   if (performance.now() - lastConfigChangeAt < 5000) return false;
   const cap = sceneTuning.particleCap || MAX_PARTICLES;
   if (cap > 0) {
-    const limit = cap * 0.2;
-    let active = 0;
-    for (let i = 0; i < particlePool.length; i++) {
-      if (particlePool[i].active) {
-        active += 1;
-        if (active > limit) return false;
-      }
-    }
+    const limit = (sceneTuning.particleCap || MAX_PARTICLES) * 0.2;
+    if (activeParticleCount > limit) return false;
   }
   return true;
 }
