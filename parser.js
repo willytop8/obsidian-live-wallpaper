@@ -5,8 +5,7 @@ const chokidar = require('chokidar');
 
 const cfgPath = path.join(__dirname, 'config.json');
 const OUT = path.join(__dirname, 'graph.json');
-// Keep in sync with DEFAULTS in index.html.
-// When adding a field here, add it there too.
+// DEFAULTS is canonical — clients fetch defaults via /api/defaults.
 const DEFAULTS = {
   accent: '#7c5cff',
   background: '#0a0a0f',
@@ -34,6 +33,7 @@ const DEFAULTS = {
   edgeStyle: 'line',
   nodeColorMode: 'tag',
   maxRenderedNodes: 5000,
+  ignorePaths: [],
   tagColors: {}
 };
 const PUBLIC_FILES = new Map([
@@ -135,6 +135,59 @@ function sanitizeTagColors(value) {
   return sanitized;
 }
 
+function validateIgnorePaths(value, key) {
+  if (!Array.isArray(value)) throw new Error(`${key} must be an array of strings`);
+  for (let i = 0; i < value.length; i++) {
+    if (typeof value[i] !== 'string' || value[i].trim() === '')
+      throw new Error(`${key}[${i}] must be a non-empty string`);
+  }
+  return value.slice();
+}
+
+function isIgnoredPath(filePath, vaultPath, patterns) {
+  if (!patterns || patterns.length === 0) return false;
+  const rel = path.relative(vaultPath, filePath);
+  if (!rel || rel.startsWith('..')) return true;
+  for (const p of patterns) {
+    if (rel === p || rel.startsWith(p + path.sep)) return true;
+    if (rel.split(path.sep).includes(p)) return true;
+  }
+  return false;
+}
+
+// Single source of truth: each entry binds a validator, its args, and a
+// default value. Used by sanitizePersistedConfig, sanitizeConfigPatch,
+// and served to clients via /api/defaults so DEFAULTS never drifts.
+const VALIDATORS = {
+  accent:             { fn: validateHexColor },
+  background:         { fn: validateHexColor },
+  refreshMs:          { fn: validateInteger,  args: [1000, 60000] },
+  linkOpacity:        { fn: validateNumber,   args: [0, 1] },
+  nodeGlow:           { fn: validateBoolean },
+  particles:          { fn: validateBoolean },
+  particleSpeed:      { fn: validateNumber,   args: [0.1, 3] },
+  particleDensity:    { fn: validateNumber,   args: [0.05, 1] },
+  motionMode:         { fn: validateEnum,     args: [MOTION_MODES] },
+  clusterByTag:       { fn: validateBoolean },
+  clusterHalos:       { fn: validateBoolean },
+  backgroundGradient: { fn: validateBoolean },
+  hubLabels:          { fn: validateBoolean },
+  hubLabelCount:      { fn: validateInteger,  args: [1, 50] },
+  labelMinImportance: { fn: validateNumber,   args: [0, 1] },
+  edgeColoring:       { fn: validateBoolean },
+  depthOfField:       { fn: validateBoolean },
+  noteFlare:          { fn: validateBoolean },
+  autoScaleLargeVaults:{ fn: validateBoolean },
+  showUnresolvedLinks:{ fn: validateBoolean },
+  fastHash:           { fn: validateBoolean },
+  glowIntensity:      { fn: validateNumber,   args: [0, 1] },
+  edgeStyle:          { fn: validateEnum,     args: [EDGE_STYLES] },
+  nodeColorMode:      { fn: validateEnum,     args: [NODE_COLOR_MODES] },
+  maxRenderedNodes:   { fn: validateInteger,  args: [100, 100000] },
+  ignorePaths:        { fn: validateIgnorePaths },
+  tagColors:          { fn: sanitizeTagColors }
+};
+
 function sanitizePersistedConfig(raw) {
   if (!isPlainObject(raw)) {
     throw new Error('config root must be a JSON object');
@@ -142,34 +195,13 @@ function sanitizePersistedConfig(raw) {
   const vaultPath = requireString(raw.vaultPath, 'vaultPath');
   const next = {
     vaultPath,
-    port: raw.port === undefined ? DEFAULTS.port : validateInteger(raw.port, 'port', 1, 65535),
-    accent: raw.accent === undefined ? DEFAULTS.accent : validateHexColor(raw.accent, 'accent'),
-    background: raw.background === undefined ? DEFAULTS.background : validateHexColor(raw.background, 'background'),
-    refreshMs: raw.refreshMs === undefined ? DEFAULTS.refreshMs : validateInteger(raw.refreshMs, 'refreshMs', 1000, 60000),
-    linkOpacity: raw.linkOpacity === undefined ? DEFAULTS.linkOpacity : validateNumber(raw.linkOpacity, 'linkOpacity', 0, 1),
-    nodeGlow: raw.nodeGlow === undefined ? DEFAULTS.nodeGlow : validateBoolean(raw.nodeGlow, 'nodeGlow'),
-    particles: raw.particles === undefined ? DEFAULTS.particles : validateBoolean(raw.particles, 'particles'),
-    particleSpeed: raw.particleSpeed === undefined ? DEFAULTS.particleSpeed : validateNumber(raw.particleSpeed, 'particleSpeed', 0.1, 3),
-    particleDensity: raw.particleDensity === undefined ? DEFAULTS.particleDensity : validateNumber(raw.particleDensity, 'particleDensity', 0.05, 1),
-    motionMode: raw.motionMode === undefined ? DEFAULTS.motionMode : validateEnum(raw.motionMode, 'motionMode', MOTION_MODES),
-    clusterByTag: raw.clusterByTag === undefined ? DEFAULTS.clusterByTag : validateBoolean(raw.clusterByTag, 'clusterByTag'),
-    clusterHalos: raw.clusterHalos === undefined ? DEFAULTS.clusterHalos : validateBoolean(raw.clusterHalos, 'clusterHalos'),
-    backgroundGradient: raw.backgroundGradient === undefined ? DEFAULTS.backgroundGradient : validateBoolean(raw.backgroundGradient, 'backgroundGradient'),
-    hubLabels: raw.hubLabels === undefined ? DEFAULTS.hubLabels : validateBoolean(raw.hubLabels, 'hubLabels'),
-    hubLabelCount: raw.hubLabelCount === undefined ? DEFAULTS.hubLabelCount : validateInteger(raw.hubLabelCount, 'hubLabelCount', 1, 50),
-    labelMinImportance: raw.labelMinImportance === undefined ? DEFAULTS.labelMinImportance : validateNumber(raw.labelMinImportance, 'labelMinImportance', 0, 1),
-    edgeColoring: raw.edgeColoring === undefined ? DEFAULTS.edgeColoring : validateBoolean(raw.edgeColoring, 'edgeColoring'),
-    depthOfField: raw.depthOfField === undefined ? DEFAULTS.depthOfField : validateBoolean(raw.depthOfField, 'depthOfField'),
-    noteFlare: raw.noteFlare === undefined ? DEFAULTS.noteFlare : validateBoolean(raw.noteFlare, 'noteFlare'),
-    autoScaleLargeVaults: raw.autoScaleLargeVaults === undefined ? DEFAULTS.autoScaleLargeVaults : validateBoolean(raw.autoScaleLargeVaults, 'autoScaleLargeVaults'),
-    showUnresolvedLinks: raw.showUnresolvedLinks === undefined ? DEFAULTS.showUnresolvedLinks : validateBoolean(raw.showUnresolvedLinks, 'showUnresolvedLinks'),
-    fastHash: raw.fastHash === undefined ? DEFAULTS.fastHash : validateBoolean(raw.fastHash, 'fastHash'),
-    glowIntensity: raw.glowIntensity === undefined ? 1 : validateNumber(raw.glowIntensity, 'glowIntensity', 0, 1),
-    edgeStyle: raw.edgeStyle === undefined ? 'line' : validateEnum(raw.edgeStyle, 'edgeStyle', EDGE_STYLES),
-    nodeColorMode: raw.nodeColorMode === undefined ? 'tag' : validateEnum(raw.nodeColorMode, 'nodeColorMode', NODE_COLOR_MODES),
-    maxRenderedNodes: raw.maxRenderedNodes === undefined ? 5000 : validateInteger(raw.maxRenderedNodes, 'maxRenderedNodes', 100, 100000),
-    tagColors: sanitizeTagColors(raw.tagColors)
+    port: raw.port === undefined ? DEFAULTS.port : validateInteger(raw.port, 'port', 1, 65535)
   };
+  for (const [key, v] of Object.entries(VALIDATORS)) {
+    next[key] = raw[key] !== undefined
+      ? v.fn(raw[key], key, ...(v.args || []))
+      : DEFAULTS[key];
+  }
   if (!fs.existsSync(vaultPath)) {
     throw new Error(`vaultPath does not exist: ${vaultPath}`);
   }
@@ -180,87 +212,13 @@ function sanitizeConfigPatch(raw) {
   if (!isPlainObject(raw)) {
     throw new Error('request body must be a JSON object');
   }
-  const allowed = new Set([
-    'accent',
-    'background',
-    'refreshMs',
-    'linkOpacity',
-    'nodeGlow',
-    'particles',
-    'particleSpeed',
-    'particleDensity',
-    'motionMode',
-    'clusterByTag',
-    'clusterHalos',
-    'backgroundGradient',
-    'hubLabels',
-    'hubLabelCount',
-    'labelMinImportance',
-    'edgeColoring',
-    'depthOfField',
-    'noteFlare',
-    'autoScaleLargeVaults',
-    'showUnresolvedLinks',
-    'fastHash',
-    'glowIntensity',
-    'edgeStyle',
-    'nodeColorMode',
-    'maxRenderedNodes',
-    'tagColors'
-  ]);
   const patch = {};
   for (const [key, value] of Object.entries(raw)) {
-    if (!allowed.has(key)) {
+    const v = VALIDATORS[key];
+    if (!v) {
       throw new Error(`unknown config key: ${key}`);
     }
-    switch (key) {
-      case 'accent':
-      case 'background':
-        patch[key] = validateHexColor(value, key);
-        break;
-      case 'refreshMs':
-        patch[key] = validateInteger(value, key, 1000, 60000);
-        break;
-      case 'linkOpacity':
-        patch[key] = validateNumber(value, key, 0, 1);
-        break;
-      case 'particleSpeed':
-        patch[key] = validateNumber(value, key, 0.1, 3);
-        break;
-      case 'particleDensity':
-        patch[key] = validateNumber(value, key, 0.05, 1);
-        break;
-      case 'motionMode':
-        patch[key] = validateEnum(value, key, MOTION_MODES);
-        break;
-      case 'edgeStyle':
-        patch[key] = validateEnum(value, key, EDGE_STYLES);
-        break;
-      case 'nodeColorMode':
-        patch[key] = validateEnum(value, key, NODE_COLOR_MODES);
-        break;
-      case 'hubLabelCount':
-        patch[key] = validateInteger(value, key, 1, 50);
-        break;
-      case 'maxRenderedNodes':
-        patch[key] = validateInteger(value, key, 100, 100000);
-        break;
-      case 'labelMinImportance':
-        patch[key] = validateNumber(value, key, 0, 1);
-        break;
-      case 'glowIntensity':
-        patch[key] = validateNumber(value, key, 0, 1);
-        break;
-      case 'tagColors':
-        patch[key] = sanitizeTagColors(value);
-        break;
-      case 'fastHash':
-        patch[key] = validateBoolean(value, key);
-        break;
-      default:
-        patch[key] = validateBoolean(value, key);
-        break;
-    }
+    patch[key] = v.fn(value, key, ...(v.args || []));
   }
   return patch;
 }
@@ -341,12 +299,14 @@ function parseMarkdownEntry(filePath) {
   }
 }
 
-function scanVaultEntries(vaultPath) {
+function scanVaultEntries(vaultPath, ignorePaths) {
+  const patterns = ignorePaths || [];
   const entries = new Map();
   (function walk(dir) {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (entry.name.startsWith('.')) continue;
       const fullPath = path.join(dir, entry.name);
+      if (isIgnoredPath(fullPath, vaultPath, patterns)) continue;
       if (entry.isDirectory()) {
         walk(fullPath);
       } else if (entry.isFile() && entry.name.endsWith('.md')) {
@@ -458,7 +418,7 @@ function writeGraphFile(graphJson, outPath = OUT) {
 }
 
 function buildGraph(vaultPath, outPath = OUT, options = {}) {
-  const entries = scanVaultEntries(vaultPath);
+  const entries = scanVaultEntries(vaultPath, options.ignorePaths);
   const result = materializeGraph(entries, vaultPath, options);
   writeGraphFile(serializeGraph(result), outPath);
   return result;
@@ -496,11 +456,20 @@ function serveFile(res, filePath, cacheControl = STATIC_CACHE_CONTROL) {
     '.svg': 'image/svg+xml'
   }[ext] || 'application/octet-stream';
   try {
-    const data = fs.readFileSync(filePath);
-    serveBuffer(res, data, mime, cacheControl);
+    const stat = fs.statSync(filePath);
+    res.writeHead(200, { ...defaultHeaders(mime, cacheControl), 'Content-Length': String(stat.size) });
+    const stream = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 });
+    stream.pipe(res);
+    stream.on('error', () => {
+      if (!res.writableEnded) {
+        res.destroy();
+      }
+    });
   } catch (e) {
-    res.writeHead(404, defaultHeaders('text/plain', DYNAMIC_CACHE_CONTROL));
-    res.end('Not found');
+    if (!res.writableEnded) {
+      res.writeHead(404, defaultHeaders('text/plain', DYNAMIC_CACHE_CONTROL));
+      res.end('Not found');
+    }
   }
 }
 
@@ -567,7 +536,8 @@ function applyFsEventToState(state, event, filePath) {
     return removed;
   }
 
-  if (!isMarkdownPath(filePath) || hasHiddenSegment(filePath, state.cfg.vaultPath)) {
+  if (!isMarkdownPath(filePath) || hasHiddenSegment(filePath, state.cfg.vaultPath)
+      || isIgnoredPath(filePath, state.cfg.vaultPath, state.cfg.ignorePaths)) {
     return false;
   }
 
@@ -635,6 +605,11 @@ function createRequestHandler(state) {
 
     if (url === '/api/config' && req.method === 'GET') {
       serveBuffer(res, JSON.stringify(state.safeConfig), 'application/json');
+      return;
+    }
+
+    if (url === '/api/defaults' && req.method === 'GET') {
+      serveBuffer(res, JSON.stringify(buildSafeConfig({ ...DEFAULTS })), 'application/json');
       return;
     }
 
@@ -720,7 +695,7 @@ function startApp(options = {}) {
     configPath,
     outPath,
     discoveredTags: {},
-    entries: scanVaultEntries(cfg.vaultPath),
+    entries: scanVaultEntries(cfg.vaultPath, cfg.ignorePaths),
     graphJson: '',
     graphVersion: 0,
     configVersion: 1,
@@ -756,9 +731,14 @@ function startApp(options = {}) {
     }, DEBOUNCE_MS);
   };
 
+  const chokidarIgnores = [/(^|[/\\])\./, /\.(?!md$)[^.]+$/];
+  if (state.cfg.ignorePaths && state.cfg.ignorePaths.length) {
+    const prefix = path.resolve(state.cfg.vaultPath) + path.sep;
+    chokidarIgnores.push(filePath => isIgnoredPath(filePath, prefix, state.cfg.ignorePaths));
+  }
   const watcher = chokidar.watch(state.cfg.vaultPath, {
     ignoreInitial: true,
-    ignored: [/(^|[/\\])\./, /\.(?!md$)[^.]+$/],
+    ignored: chokidarIgnores,
     awaitWriteFinish: { stabilityThreshold: 300 }
   });
 
@@ -804,6 +784,7 @@ if (require.main === module) {
 
 module.exports = {
   DEFAULTS,
+  VALIDATORS,
   sanitizePersistedConfig,
   sanitizeConfigPatch,
   noteId,

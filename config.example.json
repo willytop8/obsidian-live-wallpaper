@@ -21,5 +21,11 @@
   "noteFlare": true,
   "autoScaleLargeVaults": true,
   "showUnresolvedLinks": true,
+  "fastHash": true,
+  "glowIntensity": 1,
+  "edgeStyle": "line",
+  "nodeColorMode": "tag",
+  "maxRenderedNodes": 5000,
+  "ignorePaths": [".obsidian", "templates", "_archive"],
   "tagColors": {}
 }

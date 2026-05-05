@@ -57,6 +57,16 @@
   .reset-btn { margin-top: 10px; width: 100%; padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); color: var(--dim); font-size: 13px; cursor: pointer; text-align: center; transition: border-color 0.15s, color 0.15s; font: inherit; }
   .reset-btn:hover { border-color: var(--accent); color: var(--text); }
 
+  .btn-row { display: flex; gap: 8px; margin-top: 10px; }
+  .btn-row button { flex: 1; padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); color: var(--dim); font-size: 13px; cursor: pointer; transition: border-color 0.15s, color 0.15s; font: inherit; }
+  .btn-row button:hover { border-color: var(--accent); color: var(--text); }
+
+  body.light { --bg: #f4f4f6; --surface: #ffffff; --border: #d4d4dc; --text: #1a1a24; --dim: #6e6e80; }
+  body.light .preset .meta .desc { color: #8888a0; }
+  body.light .header-bar .subtitle { color: #6e6e80; }
+  body.light .conn-status.connected { color: #2a8c4a; }
+  body.light .conn-status.disconnected { color: #cc4444; }
+
   .tag-list { display: flex; flex-direction: column; gap: 0; }
   .tag-row { display: flex; align-items: center; padding: 10px 16px; background: var(--surface); border: 1px solid var(--border); margin-bottom: -1px; gap: 12px; }
   .tag-row:first-child { border-radius: var(--radius) var(--radius) 0 0; }
@@ -79,13 +89,21 @@
 <h1>Wallpaper Settings</h1>
 <div class="header-bar">
   <p class="subtitle">Changes apply to the wallpaper in ~2 seconds.</p>
-  <span class="conn-status" id="connStatus"></span>
+  <div style="display:flex;align-items:center;gap:12px">
+    <button id="themeToggle" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--dim);cursor:pointer;font-size:14px;padding:4px 8px;line-height:1" title="Toggle dark/light mode">&#9788;</button>
+    <span class="conn-status" id="connStatus"></span>
+  </div>
 </div>
 
 <div class="section">
   <div class="section-title">Presets</div>
   <div class="presets" id="presets"></div>
   <button class="reset-btn" id="resetDefaults">Reset to defaults</button>
+  <div class="btn-row">
+    <button id="copyConfig">Copy JSON</button>
+    <button id="pasteConfig">Paste JSON</button>
+    <button id="saveCustom">Save Custom</button>
+  </div>
 </div>
 
 <div class="section">
@@ -419,6 +437,10 @@ async function loadPresets() {
     PRESETS = [];
     status('Failed to load presets', 'err');
   }
+  try {
+    const custom = JSON.parse(localStorage.getItem('vaultwallpaper-custom') || '[]');
+    if (custom.length) PRESETS = [...PRESETS, ...custom];
+  } catch (e) {}
   renderPresets();
   detectActivePreset();
 }
@@ -523,21 +545,85 @@ document.getElementById('maxRenderedNodes').addEventListener('change', e => {
   save({ maxRenderedNodes: v });
 });
 
-// Reset to defaults
+// Reset to defaults — fetch canonical defaults from /api/defaults
 document.getElementById('resetDefaults').addEventListener('click', async () => {
-  const defaults = {
-    accent: '#7c5cff', background: '#0a0a0f', linkOpacity: 0.18,
-    nodeGlow: true, glowIntensity: 1, edgeStyle: 'line', nodeColorMode: 'tag',
-    edgeColoring: true, particles: true, particleSpeed: 1, particleDensity: 0.3,
-    motionMode: 'balanced', clusterByTag: true, clusterHalos: true,
-    backgroundGradient: true, hubLabels: false, hubLabelCount: 5,
-    labelMinImportance: 0.22, depthOfField: true, noteFlare: true,
-    autoScaleLargeVaults: true, showUnresolvedLinks: true, maxRenderedNodes: 5000,
-    refreshMs: 5000, tagColors: {}
-  };
-  if (await save(defaults)) {
-    applyForm();
-    renderTags();
+  try {
+    const r = await fetch(API + '/api/defaults');
+    if (!r.ok) throw new Error('defaults fetch failed');
+    const defaults = await r.json();
+    if (await save(defaults)) {
+      applyForm();
+      renderTags();
+    }
+  } catch (e) {
+    status(e.message || 'Reset failed', 'err');
+  }
+});
+
+// Theme toggle
+(function() {
+  const btn = document.getElementById('themeToggle');
+  const saved = localStorage.getItem('vaultwallpaper-theme');
+  if (saved === 'light') {
+    document.body.classList.add('light');
+    btn.innerHTML = '&#9790;';
+  }
+  btn.addEventListener('click', () => {
+    const isLight = document.body.classList.toggle('light');
+    btn.innerHTML = isLight ? '&#9790;' : '&#9788;';
+    localStorage.setItem('vaultwallpaper-theme', isLight ? 'light' : 'dark');
+  });
+})();
+
+// Copy current config as JSON
+document.getElementById('copyConfig').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(cfg, null, 2));
+    status('Copied to clipboard', 'ok');
+  } catch (e) {
+    status('Copy failed: ' + e.message, 'err');
+  }
+});
+
+// Paste JSON config
+document.getElementById('pasteConfig').addEventListener('click', async () => {
+  try {
+    const text = await navigator.clipboard.readText();
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object') throw new Error('Invalid JSON');
+    if (await save(parsed)) {
+      applyForm();
+      renderTags();
+    }
+  } catch (e) {
+    status('Paste failed: ' + e.message, 'err');
+  }
+});
+
+// Save current config as custom preset
+document.getElementById('saveCustom').addEventListener('click', () => {
+  const name = prompt('Preset name:', 'Custom');
+  if (!name || !name.trim()) return;
+  const key = 'custom-' + name.trim().toLowerCase().replace(/\s+/g, '-');
+  const custom = { name: name.trim(), description: 'Custom preset', accent: cfg.accent, background: cfg.background, thumbnail: '', config: { ...cfg } };
+  const stored = JSON.parse(localStorage.getItem('vaultwallpaper-custom') || '[]');
+  const idx = stored.findIndex(p => p.name === custom.name);
+  if (idx >= 0) stored[idx] = custom;
+  else stored.push(custom);
+  localStorage.setItem('vaultwallpaper-custom', JSON.stringify(stored));
+  status('Saved: ' + custom.name, 'ok');
+  loadPresets();
+});
+
+// Keyboard shortcuts
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault();
+    save(cfg);
+  }
+  if (e.key === 'Escape') {
+    const statusEl = document.getElementById('status');
+    statusEl.className = 'status';
   }
 });
 

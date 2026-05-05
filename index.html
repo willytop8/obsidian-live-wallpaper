@@ -2,8 +2,23 @@
 <html><head><meta charset="utf-8"><style>
   html,body{margin:0;height:100%;overflow:hidden;}
   canvas{display:block;}
+  .search-wrap{position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:10;display:none;width:360px;max-width:90vw}
+  .search-wrap.open{display:block}
+  .search-input{width:100%;padding:10px 14px;font-size:15px;background:rgba(14,14,20,0.92);border:1px solid rgba(124,92,255,0.5);border-radius:8px;color:#e0e0e8;outline:none;font-family:inherit;backdrop-filter:blur(12px)}
+  .search-input:focus{border-color:rgba(124,92,255,0.9)}
+  .search-results{max-height:320px;overflow-y:auto;margin-top:6px;background:rgba(14,14,20,0.9);border:1px solid rgba(124,92,255,0.3);border-radius:8px;color:#e0e0e8;backdrop-filter:blur(12px);display:none}
+  .search-results:not(:empty){display:block}
+  .search-result{padding:8px 14px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px}
+  .search-result:hover,.search-result.focus{background:rgba(124,92,255,0.2)}
+  .search-result .tag-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .search-result .label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .search-result .ghost-tag{font-size:10px;color:#888;margin-left:auto;flex-shrink:0}
 </style></head><body>
 <canvas id="c"></canvas>
+<div class="search-wrap" id="searchWrap">
+  <input type="text" class="search-input" id="searchInput" placeholder="Search nodes… (Ctrl+K)" autocomplete="off">
+  <div class="search-results" id="searchResults"></div>
+</div>
 <script src="/vendor/d3.min.js"></script>
 <script>
 const canvas = document.getElementById('c');
@@ -11,8 +26,8 @@ const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
 const DEVICE_DPR = window.devicePixelRatio || 1;
 let renderScale = DEVICE_DPR;
 
+// DEFAULTS is fetched from /api/defaults; fallback for offline / synthetic mode.
 // Keep in sync with DEFAULTS in parser.js.
-// When adding a field here, add it there too.
 const DEFAULTS = {
   accent: '#7c5cff',
   background: '#0a0a0f',
@@ -35,6 +50,7 @@ const DEFAULTS = {
   depthOfField: true,
   noteFlare: true,
   autoScaleLargeVaults: true,
+  showUnresolvedLinks: true,
   fastHash: true,
   maxRenderedNodes: 5000,
   edgeStyle: 'line',
@@ -444,7 +460,7 @@ function rebuildQuadtree() {
   for (let i = 0; i < nodes.length; i++) {
     const n = nodes[i];
     if (sceneTuning.maxRenderedNodes && n.__renderable === false) continue;
-    if (hasPoint(n)) q.add(n);
+    if (n.__hasPoint) q.add(n);
   }
   sceneTuning.quadtree = q;
   lastQuadtreeBuild = performance.now();
@@ -453,7 +469,10 @@ function rebuildQuadtree() {
 function maybeRebuildQuadtree() {
   if (!sceneTuning.quadtree) { rebuildQuadtree(); return; }
   if (!simRunning) return;
-  const interval = simAlpha > 0.12 ? 2800 : 6500;
+  const n = nodes ? nodes.length : 1;
+  const interval = simAlpha > 0.12
+    ? Math.max(400, Math.min(4000, n * 2))
+    : Math.max(1500, Math.min(12000, n * 6));
   if (performance.now() - lastQuadtreeBuild >= interval) rebuildQuadtree();
 }
 
@@ -485,7 +504,12 @@ function ensureParticlePool(cap) {
   while (particlePool.length < cap) {
     particlePool.push({ active: false, link: null, t: 0, speed: 0, alpha: 0, size: 0 });
   }
-  if (particlePool.length > cap) { particlePool.length = cap; activeParticleCount = 0; }
+  if (particlePool.length > cap) {
+    for (let i = cap; i < particlePool.length; i++) {
+      if (particlePool[i].active) { particlePool[i].active = false; activeParticleCount--; }
+    }
+    particlePool.length = cap;
+  }
 }
 
 function applyRenderableCap() {
@@ -525,7 +549,9 @@ addEventListener('resize', () => { resize(); invalidateStaticLayer(); markConfig
 
 const GLOW_SPRITE_SIZE = 128;
 let glowSpriteBase = null;
+const GLOW_SPRITE_CACHE_MAX = 64;
 const glowSpriteCache = new Map();
+const glowSpriteCacheOrder = [];
 
 function buildGlowSpriteBase() {
   const c = document.createElement('canvas');
@@ -552,7 +578,12 @@ function getGlowSprite(hex) {
   g.globalCompositeOperation = 'source-in';
   g.fillStyle = hex;
   g.fillRect(0, 0, GLOW_SPRITE_SIZE, GLOW_SPRITE_SIZE);
+  while (glowSpriteCache.size >= GLOW_SPRITE_CACHE_MAX) {
+    const evict = glowSpriteCacheOrder.shift();
+    if (evict) glowSpriteCache.delete(evict);
+  }
   glowSpriteCache.set(hex, sprite);
+  glowSpriteCacheOrder.push(hex);
   return sprite;
 }
 
@@ -693,7 +724,9 @@ function buildFramePoints() {
       node.__fy = NaN;
       continue;
     }
-    if (!hasPoint(node)) {
+    const ok = hasPoint(node);
+    node.__hasPoint = ok;
+    if (!ok) {
       node.__fx = NaN;
       node.__fy = NaN;
       continue;
@@ -758,6 +791,14 @@ async function loadCfg() {
     startStateSync();
   }
 }
+
+// Fetch canonical defaults once at boot so normalizeConfig never drifts.
+(async () => {
+  const defaults = await loadJson('/api/defaults');
+  if (defaults && isPlainObject(defaults)) {
+    Object.assign(DEFAULTS, defaults);
+  }
+})();
 
 function hashStr(s) {
   let h = 0;
@@ -843,6 +884,7 @@ function ensureSimWorker() {
       simSharedEnabled = false;
       simSharedPositions = null;
       rebuildQuadtree();
+      invalidateStaticLayer();
     }
   };
   simWorker.onerror = (err) => { console.warn('sim worker error:', err.message || err); };
@@ -1037,7 +1079,7 @@ function spawnParticles() {
     const slot = particlePool[i];
     if (slot.active) continue;
     const link = links[Math.floor(Math.random() * links.length)];
-    if (!hasPoint(link.source) || !hasPoint(link.target)) continue;
+      if (!link.source.__hasPoint || !link.target.__hasPoint) continue;
     slot.active = true;
     slot.link = link;
     slot.t = 0;
@@ -1460,7 +1502,8 @@ function draw() {
   maybeRebuildQuadtree();
   markVisibleNodes();
   ctx.clearRect(0, 0, innerWidth, innerHeight);
-  if (simRunning) staticLayerDirty = true;
+  // staticLayerDirty is set on sim start/stop by loadGraph and worker onmessage,
+  // not per-frame. The 500ms throttle in drawStaticLayer handles mid-sim rebuilds.
   drawStaticLayer();
   drawEdges();
   drawParticles();
@@ -1568,5 +1611,102 @@ applyBackground();
   }
   startStateSync();
   breathe();
+})();
+
+// Node search overlay
+(function() {
+  const wrap = document.getElementById('searchWrap');
+  const input = document.getElementById('searchInput');
+  const results = document.getElementById('searchResults');
+  let focusIdx = -1;
+
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function open() {
+    wrap.classList.add('open');
+    input.value = '';
+    input.focus();
+    results.innerHTML = '';
+    focusIdx = -1;
+  }
+
+  function close() {
+    wrap.classList.remove('open');
+    results.innerHTML = '';
+    focusIdx = -1;
+  }
+
+  function getNodeColor(n) {
+    return n.__color || cfg.accent || '#7c5cff';
+  }
+
+  function search(query) {
+    if (!query || query.length < 2) { results.innerHTML = ''; focusIdx = -1; return; }
+    const q = query.toLowerCase();
+    const match = [];
+    for (const n of nodes) {
+      if (n.ghost && !cfg.showUnresolvedLinks) continue;
+      const label = (n.label || n.id || '').toLowerCase();
+      if (label.includes(q)) match.push(n);
+      if (match.length >= 30) break;
+    }
+    focusIdx = match.length ? 0 : -1;
+    results.innerHTML = match.map((n, i) =>
+      '<div class="search-result' + (i === 0 ? ' focus' : '') + '" data-idx="' + i + '">' +
+      '<span class="tag-dot" style="background:' + getNodeColor(n) + '"></span>' +
+      '<span class="label">' + esc(n.label || n.id) + '</span>' +
+      (n.ghost ? '<span class="ghost-tag">unresolved</span>' : '') +
+      '</div>'
+    ).join('');
+    // Store matched nodes for click handler
+    results._matches = match;
+  }
+
+  function selectResult(idx) {
+    const matches = results._matches;
+    if (!matches || idx < 0 || idx >= matches.length) return;
+    const node = matches[idx];
+    flares.set(node.id, { start: tick + 1, duration: 120 });
+    close();
+  }
+
+  document.addEventListener('keydown', e => {
+    const ctrl = e.ctrlKey || e.metaKey;
+    if (ctrl && e.key === 'k') { e.preventDefault(); open(); return; }
+    if (e.key === 'Escape' && wrap.classList.contains('open')) { close(); return; }
+    if (wrap.classList.contains('open')) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        const max = results.querySelectorAll('.search-result').length;
+        if (max === 0) return;
+        focusIdx = (focusIdx + 1) % max;
+        updateFocus();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        const max = results.querySelectorAll('.search-result').length;
+        if (max === 0) return;
+        focusIdx = (focusIdx - 1 + max) % max;
+        updateFocus();
+      } else if (e.key === 'Enter' && focusIdx >= 0) {
+        e.preventDefault();
+        selectResult(focusIdx);
+      }
+    }
+  });
+
+  function updateFocus() {
+    const items = results.querySelectorAll('.search-result');
+    items.forEach((el, i) => el.classList.toggle('focus', i === focusIdx));
+    if (items[focusIdx]) items[focusIdx].scrollIntoView({ block: 'nearest' });
+  }
+
+  input.addEventListener('input', () => search(input.value));
+  results.addEventListener('click', e => {
+    const el = e.target.closest('.search-result');
+    if (!el) return;
+    selectResult(parseInt(el.dataset.idx));
+  });
 })();
 </script></body></html>
