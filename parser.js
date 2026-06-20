@@ -32,6 +32,10 @@ const DEFAULTS = {
   glowIntensity: 1,
   edgeStyle: 'line',
   nodeColorMode: 'tag',
+  labelFont: 'sans',
+  autoTheme: false,
+  lightAccent: '#39407a',
+  lightBackground: '#ece6d6',
   maxRenderedNodes: 5000,
   ignorePaths: [],
   tagColors: {}
@@ -42,6 +46,7 @@ const PUBLIC_FILES = new Map([
   ['/settings.html', path.join(__dirname, 'settings.html')],
   ['/vendor/d3.min.js', path.join(__dirname, 'vendor', 'd3.min.js')],
   ['/worker.js', path.join(__dirname, 'worker.js')],
+  ['/renderer-core.js', path.join(__dirname, 'renderer-core.js')],
   ['/presets.json', path.join(__dirname, 'presets.json')]
 ]);
 const DOCS_DIR = path.join(__dirname, 'docs');
@@ -49,7 +54,8 @@ const DOCS_ALLOWED_EXTS = new Set(['.png', '.gif', '.jpg', '.svg', '.md', '.txt'
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 const MOTION_MODES = new Set(['light', 'balanced', 'showcase']);
 const EDGE_STYLES = new Set(['line', 'curve', 'none']);
-const NODE_COLOR_MODES = new Set(['tag', 'age']);
+const NODE_COLOR_MODES = new Set(['tag', 'age', 'folder']);
+const LABEL_FONTS = new Set(['sans', 'mono', 'serif']);
 const WIKILINK = /\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g;
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---/;
 const TAGS_FLOW = /^tags:\s*\[([^\]]*)\]/m;
@@ -183,6 +189,10 @@ const VALIDATORS = {
   glowIntensity:      { fn: validateNumber,   args: [0, 1] },
   edgeStyle:          { fn: validateEnum,     args: [EDGE_STYLES] },
   nodeColorMode:      { fn: validateEnum,     args: [NODE_COLOR_MODES] },
+  labelFont:          { fn: validateEnum,     args: [LABEL_FONTS] },
+  autoTheme:          { fn: validateBoolean },
+  lightAccent:        { fn: validateHexColor },
+  lightBackground:    { fn: validateHexColor },
   maxRenderedNodes:   { fn: validateInteger,  args: [100, 100000] },
   ignorePaths:        { fn: validateIgnorePaths },
   tagColors:          { fn: sanitizeTagColors }
@@ -302,7 +312,15 @@ function parseMarkdownEntry(filePath) {
 function scanVaultEntries(vaultPath, ignorePaths) {
   const patterns = ignorePaths || [];
   const entries = new Map();
+  // Track resolved real directory paths so a symlink cycle (e.g. a folder that
+  // links back to an ancestor) can't drive the walk into infinite recursion.
+  const visitedDirs = new Set();
   (function walk(dir) {
+    let realDir;
+    try { realDir = fs.realpathSync(dir); }
+    catch (_) { return; }
+    if (visitedDirs.has(realDir)) return;
+    visitedDirs.add(realDir);
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (entry.name.startsWith('.')) continue;
       const fullPath = path.join(dir, entry.name);
@@ -361,6 +379,11 @@ function materializeGraph(entries, vaultPath, options = {}) {
     if (files[id].basename !== id) node.label = files[id].basename;
     if (tags[id]) node.tag = tags[id];
     if (files[id].mtimeMs) node.mtime = files[id].mtimeMs;
+    // Top-level folder under the vault, for `nodeColorMode: 'folder'`. Omitted
+    // for notes at the vault root (they color as the accent).
+    const rel = path.relative(vaultPath, files[id].path);
+    const sepIdx = rel.indexOf(path.sep);
+    if (sepIdx > 0) node.folder = rel.slice(0, sepIdx);
     return node;
   });
   const nodeSet = new Set(nodes.map(node => node.id));
@@ -717,6 +740,44 @@ function startApp(options = {}) {
     process.exit(1);
   }
 
+  if (state.entries.size === 0) {
+    console.log(`note: no .md files found under ${state.cfg.vaultPath} — double-check vaultPath; the graph stays empty until notes appear.`);
+  }
+
+  // Live-reload config.json when it is edited by hand. (The settings page pushes
+  // changes via POST; this covers manual edits.) Visual fields apply immediately;
+  // vaultPath/port changes are noted as needing a restart. Atomic saves replace
+  // the file inode, so chokidar is used rather than fs.watch on the file itself.
+  function reloadConfigFromDisk() {
+    let next;
+    try {
+      next = sanitizePersistedConfig(JSON.parse(fs.readFileSync(state.configPath, 'utf8')));
+    } catch (e) {
+      console.error(`config.json change ignored: ${e.message}`);
+      return;
+    }
+    if (next.vaultPath !== state.cfg.vaultPath || next.port !== state.cfg.port) {
+      console.log('note: vaultPath/port change in config.json needs a restart to take effect.');
+    }
+    const merged = { ...next, vaultPath: state.cfg.vaultPath, port: state.cfg.port };
+    const nextSafe = buildSafeConfig(merged);
+    if (JSON.stringify(nextSafe) === JSON.stringify(state.safeConfig)) return; // echo of our own write / no change
+    const unresolvedChanged = merged.showUnresolvedLinks !== state.cfg.showUnresolvedLinks;
+    state.cfg = merged;
+    state.safeConfig = nextSafe;
+    state.configVersion += 1;
+    broadcastEvent(state, 'config', { version: state.configVersion });
+    if (unresolvedChanged) rebuild();
+    console.log('config.json reloaded');
+  }
+
+  let cfgDebounce = null;
+  const configWatcher = chokidar.watch(state.configPath, { ignoreInitial: true });
+  configWatcher.on('all', () => {
+    if (cfgDebounce) clearTimeout(cfgDebounce);
+    cfgDebounce = setTimeout(reloadConfigFromDisk, 200);
+  }).on('error', e => console.error('config watcher error:', e.message));
+
   let debounceTimer = null;
   const DEBOUNCE_MS = 400;
   const debouncedRebuild = () => {
@@ -760,12 +821,19 @@ function startApp(options = {}) {
   });
 
   server.on('error', e => {
-    console.error(`server error: ${e.message}`);
+    if (e.code === 'EADDRINUSE') {
+      console.error(`Port ${state.cfg.port} is already in use. Another instance may be running, or pick a different port:`);
+      console.error(`  • edit "port" in ${path.basename(state.configPath)}, or`);
+      console.error(`  • start with a free port, e.g. --port ${state.cfg.port + 1}`);
+    } else {
+      console.error(`server error: ${e.message}`);
+    }
     process.exit(1);
   });
 
   function shutdown() {
     watcher.close();
+    configWatcher.close();
     for (const client of state.eventClients) {
       try { client.end(); } catch (_) {}
     }
@@ -787,6 +855,8 @@ module.exports = {
   VALIDATORS,
   sanitizePersistedConfig,
   sanitizeConfigPatch,
+  extractTag,
+  extractWikilinks,
   noteId,
   buildGraph,
   createRequestHandler,

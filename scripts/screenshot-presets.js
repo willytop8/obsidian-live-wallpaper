@@ -14,9 +14,14 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
+const { findChrome } = require('./find-chrome.js');
 
 const ROOT = path.resolve(__dirname, '..');
-const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const CHROME = findChrome();
+if (!CHROME) {
+  console.error('No Chrome/Chromium found. Set CHROME=/path/to/chrome and retry.');
+  process.exit(1);
+}
 const HOST = '127.0.0.1';
 const PORT = (() => {
   try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8')).port || 3000; }

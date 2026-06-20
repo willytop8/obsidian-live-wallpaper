@@ -1,5 +1,9 @@
 # Obsidian Live Wallpaper
 
+[![CI](https://github.com/willytop8/obsidian-live-wallpaper/actions/workflows/ci.yml/badge.svg)](https://github.com/willytop8/obsidian-live-wallpaper/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A518-43853d.svg)](https://nodejs.org)
+
 > Turn your Obsidian vault into an ambient desktop scene instead of another hidden sidebar.
 
 ![Demo](docs/demo.gif)
@@ -33,6 +37,21 @@ The renderer is tuned for actual desktop use:
 
 ![Settings preview](docs/settings-preview.png)
 
+## Presets
+
+Eighteen curated looks, designed to span genuinely different points across five
+visual axes (see [`docs/theme-axes.md`](docs/theme-axes.md)). Pick one in the
+settings page — or use it as a starting point and tweak.
+
+| | | |
+|:--:|:--:|:--:|
+| ![Plain](docs/presets/plain.png)<br>**Plain** | ![Ambient](docs/presets/ambient.png)<br>**Ambient** | ![Neon](docs/presets/neon.png)<br>**Neon** |
+| ![Dense](docs/presets/dense.png)<br>**Dense** | ![Blueprint](docs/presets/blueprint.png)<br>**Blueprint** | ![Parchment](docs/presets/parchment.png)<br>**Parchment** |
+| ![Botanical](docs/presets/botanical.png)<br>**Botanical** | ![Constellation](docs/presets/constellation.png)<br>**Constellation** | ![Topographic](docs/presets/topographic.png)<br>**Topographic** |
+| ![Contrast](docs/presets/contrast.png)<br>**Contrast** | ![Synthwave](docs/presets/synthwave.png)<br>**Synthwave** | ![Mist](docs/presets/mist.png)<br>**Mist** |
+| ![Crystalline](docs/presets/crystalline.png)<br>**Crystalline** | ![Confetti](docs/presets/confetti.png)<br>**Confetti** | ![Abyss](docs/presets/abyss.png)<br>**Abyss** |
+| ![Ink](docs/presets/ink.png)<br>**Ink** | ![Library](docs/presets/library.png)<br>**Library** | ![Vapor](docs/presets/vapor.png)<br>**Vapor** |
+
 ## Install
 
 You'll need [Node.js](https://nodejs.org) (v18+) and a wallpaper host app:
@@ -40,6 +59,17 @@ You'll need [Node.js](https://nodejs.org) (v18+) and a wallpaper host app:
 - **macOS**: [Plash](https://apps.apple.com/us/app/plash/id1494023538) (free, Mac App Store)
 - **Windows**: [Lively Wallpaper](https://www.rocksdanister.com/lively/) (free, open source)
 - **Linux**: KDE has native support; GNOME via [Hidamari](https://github.com/jeffshee/hidamari); tiling WMs via [xwinwrap](https://github.com/ujjwal96/xwinwrap)
+
+**Quickest start (no clone):**
+
+```bash
+npx obsidian-live-wallpaper --vault "/path/to/your/Obsidian/vault"
+```
+
+This writes a small config in the current folder and starts the server. Then
+point your wallpaper host at the printed `http://127.0.0.1:3000` URL.
+
+**Or clone it** (best if you want to customize or contribute):
 
 ```bash
 git clone https://github.com/willytop8/obsidian-live-wallpaper.git

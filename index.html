@@ -20,6 +20,7 @@
   <div class="search-results" id="searchResults"></div>
 </div>
 <script src="/vendor/d3.min.js"></script>
+<script src="/renderer-core.js"></script>
 <script>
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
@@ -54,11 +55,33 @@ const DEFAULTS = {
   fastHash: true,
   maxRenderedNodes: 5000,
   edgeStyle: 'line',
-  nodeColorMode: 'tag'
+  nodeColorMode: 'tag',
+  labelFont: 'sans',
+  autoTheme: false,
+  lightAccent: '#39407a',
+  lightBackground: '#ece6d6'
 };
 
 const EDGE_STYLES = new Set(['line', 'curve', 'none']);
-const NODE_COLOR_MODES = new Set(['tag', 'age']);
+const NODE_COLOR_MODES = new Set(['tag', 'age', 'folder']);
+const LABEL_FONTS = new Set(['sans', 'mono', 'serif']);
+const FONT_STACKS = {
+  sans: "-apple-system, BlinkMacSystemFont, 'Inter', sans-serif",
+  mono: "ui-monospace, SFMono-Regular, Menlo, 'Cascadia Code', monospace",
+  serif: "Georgia, 'Iowan Old Style', 'Times New Roman', serif"
+};
+function labelFontStack() { return FONT_STACKS[cfg.labelFont] || FONT_STACKS.sans; }
+// Deterministic per-folder color for nodeColorMode 'folder'.
+const FOLDER_COLOR_CACHE = new Map();
+function folderColor(folder) {
+  if (!folder) return cfg.accent;
+  let c = FOLDER_COLOR_CACHE.get(folder);
+  if (c) return c;
+  const hue = ((hashStr(folder) % 360) + 360) % 360;
+  c = hslToHex(hue, 60, 64);
+  FOLDER_COLOR_CACHE.set(folder, c);
+  return c;
+}
 // Age-palette: fresh (green) → mid (amber) → stale (red)
 const AGE_PALETTE = ['#78d97c', '#b8d960', '#e8c84a', '#e89a3c', '#d96b4a'];
 
@@ -69,6 +92,7 @@ const MOTION_PROFILES = {
 };
 
 const MAX_PARTICLES = 600;
+const WIDTH_BUCKETS = [0.6, 0.95, 1.3];
 
 let cfg = { ...DEFAULTS };
 let sim;
@@ -79,6 +103,41 @@ let maxDeg = 1;
 let tick = 0;
 let prevNodeIds = new Set();
 let particlePool = [];
+// Respect the OS "reduce motion" accessibility setting: no drift, particles, or
+// flares regardless of the active preset. Also a small battery win. Declared
+// before the first buildSceneTuning() call below, which reads it.
+let REDUCED_MOTION = false;
+try {
+  const __rmq = window.matchMedia('(prefers-reduced-motion: reduce)');
+  REDUCED_MOTION = __rmq.matches;
+  const __onRM = () => {
+    REDUCED_MOTION = __rmq.matches;
+    markConfigChanged();
+    if (typeof refreshSceneTuning === 'function') refreshSceneTuning();
+  };
+  if (__rmq.addEventListener) __rmq.addEventListener('change', __onRM);
+  else if (__rmq.addListener) __rmq.addListener(__onRM);
+} catch (e) {}
+
+// Auto light/dark: when a preset opts in (autoTheme) and the OS is in light mode,
+// swap to the preset's light accent/background and drop glow. __rawCfg holds the
+// un-themed config so we can re-derive cfg when the OS preference flips.
+let PREFERS_LIGHT = false;
+let __rawCfg = { ...DEFAULTS };
+try {
+  const __lq = window.matchMedia('(prefers-color-scheme: light)');
+  PREFERS_LIGHT = __lq.matches;
+  const __onL = () => {
+    PREFERS_LIGHT = __lq.matches;
+    cfg = applyAutoTheme(__rawCfg);
+    applyBackground();
+    markConfigChanged();
+    if (typeof refreshSceneTuning === 'function') refreshSceneTuning();
+    invalidateStaticLayer();
+  };
+  if (__lq.addEventListener) __lq.addEventListener('change', __onL);
+  else if (__lq.addListener) __lq.addListener(__onL);
+} catch (e) {}
 let sceneTuning = buildSceneTuning();
 let simRunning = false;
 let simAlpha = 0;
@@ -95,7 +154,15 @@ let labelCandidates = [];
 const RGB_CACHE = new Map();
 const edgeGroups = new Map();
 const nodeGroups = new Map();
+const particleDrawGroups = new Map();
 let activeParticleCount = 0;
+let __drawnNodes = 0; // count of nodes actually drawn last frame (used by renderer smoke probe)
+let __calmSince = 0;  // timestamp the scene last became "calm" (for deeper idle throttle)
+let __rankedIdx = null; // cached importance ranking for the renderable cap
+let __rankValid = false;
+let __hasRendered = false; // gates the cross-fade so the very first paint doesn't fade
+let __fadeCanvas = null, __fadeStart = 0, __fadeActive = false;
+const FADE_MS = 240;
 let cachedHalos = null;
 let cachedHalosForAlpha = -1;
 let staticLayer = null;
@@ -253,10 +320,6 @@ function finiteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
 function hasPoint(node) {
   return finiteNumber(node?.x) && finiteNumber(node?.y);
 }
@@ -275,7 +338,24 @@ function normalizeConfig(data) {
     : DEFAULTS.maxRenderedNodes;
   next.edgeStyle = EDGE_STYLES.has(next.edgeStyle) ? next.edgeStyle : DEFAULTS.edgeStyle;
   next.nodeColorMode = NODE_COLOR_MODES.has(next.nodeColorMode) ? next.nodeColorMode : DEFAULTS.nodeColorMode;
+  next.labelFont = LABEL_FONTS.has(next.labelFont) ? next.labelFont : DEFAULTS.labelFont;
+  next.autoTheme = next.autoTheme === true;
   return next;
+}
+
+function applyAutoTheme(c) {
+  if (c.autoTheme && PREFERS_LIGHT) {
+    return { ...c, accent: c.lightAccent || c.accent, background: c.lightBackground || c.background, nodeGlow: false };
+  }
+  return c;
+}
+
+// Config fields whose change warrants a cross-fade (preset-level shifts), as
+// opposed to a small slider tweak that should update instantly.
+const FADE_FIELDS = ['accent', 'background', 'nodeColorMode', 'edgeStyle', 'backgroundGradient', 'nodeGlow', 'motionMode', 'labelFont'];
+function isBigVisualChange(prev, next) {
+  for (const k of FADE_FIELDS) if (prev[k] !== next[k]) return true;
+  return false;
 }
 
 let __ageStats = null;
@@ -301,6 +381,17 @@ function currentMotionProfile() {
 }
 
 function buildSceneTuning() {
+  const t = buildSceneTuningRaw();
+  if (REDUCED_MOTION) {
+    t.motion = { ...t.motion, driftAmp: 0, phaseSpeed: 0, pulseSpeed: 0, particleSpawnEvery: 9999, particleBurst: 0, particleAlpha: 0 };
+    t.particlesEnabled = false;
+    t.particleCap = 0;
+    t.noteFlareEnabled = false;
+  }
+  return t;
+}
+
+function buildSceneTuningRaw() {
   const nodeCount = nodes.length;
   const linkCount = links.length;
   const dense = nodeCount > 350 || linkCount > 1200;
@@ -460,7 +551,13 @@ function rebuildQuadtree() {
   for (let i = 0; i < nodes.length; i++) {
     const n = nodes[i];
     if (sceneTuning.maxRenderedNodes && n.__renderable === false) continue;
-    if (n.__hasPoint) q.add(n);
+    // Use the live position check, not the cached __hasPoint flag: the flag is
+    // only set once buildFramePoints has run, but the quadtree is first built
+    // during loadGraph (before any frame). Relying on __hasPoint here left the
+    // cull tree empty on first build, so every node got culled until the next
+    // rebuild — a blank flash on first paint, and a permanently blank frame in
+    // synthetic/oneshot mode where the sim never ticks a rebuild.
+    if (hasPoint(n)) q.add(n);
   }
   sceneTuning.quadtree = q;
   lastQuadtreeBuild = performance.now();
@@ -523,9 +620,17 @@ function applyRenderableCap() {
     for (let i = 0; i < nodes.length; i++) nodes[i].__renderable = true;
     return;
   }
-  const idx = new Array(nodes.length);
-  for (let i = 0; i < nodes.length; i++) idx[i] = i;
-  idx.sort((a, b) => (nodes[b].importance || 0) - (nodes[a].importance || 0));
+  // The importance ranking only changes when the graph reloads, but this runs on
+  // every refreshSceneTuning (including window resize). Sort once, then reuse the
+  // cached order — only the cap (how many of the ranked nodes are kept) varies.
+  if (!__rankValid || !__rankedIdx || __rankedIdx.length !== nodes.length) {
+    const idx = new Array(nodes.length);
+    for (let i = 0; i < nodes.length; i++) idx[i] = i;
+    idx.sort((a, b) => (nodes[b].importance || 0) - (nodes[a].importance || 0));
+    __rankedIdx = idx;
+    __rankValid = true;
+  }
+  const idx = __rankedIdx;
   for (let i = 0; i < nodes.length; i++) nodes[i].__renderable = false;
   for (let i = 0; i < cap && i < idx.length; i++) nodes[idx[i]].__renderable = true;
 }
@@ -585,6 +690,35 @@ function getGlowSprite(hex) {
   glowSpriteCache.set(hex, sprite);
   glowSpriteCacheOrder.push(hex);
   return sprite;
+}
+
+function snapshotForFade() {
+  if (SYNTHETIC_SIZE > 0 || ONESHOT) return;
+  try {
+    const w = canvas.width, h = canvas.height;
+    if (!w || !h) return;
+    if (!__fadeCanvas || __fadeCanvas.width !== w || __fadeCanvas.height !== h) {
+      __fadeCanvas = (typeof OffscreenCanvas !== 'undefined') ? new OffscreenCanvas(w, h) : document.createElement('canvas');
+      __fadeCanvas.width = w; __fadeCanvas.height = h;
+    }
+    const g = __fadeCanvas.getContext('2d');
+    g.clearRect(0, 0, w, h);
+    g.drawImage(canvas, 0, 0);
+    __fadeStart = performance.now();
+    __fadeActive = true;
+  } catch (e) { __fadeActive = false; }
+}
+
+function drawFadeOverlay() {
+  if (!__fadeActive || !__fadeCanvas) return;
+  const t = (performance.now() - __fadeStart) / FADE_MS;
+  if (t >= 1) { __fadeActive = false; return; }
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0); // __fadeCanvas is in device pixels
+  ctx.globalAlpha = 1 - t;
+  ctx.drawImage(__fadeCanvas, 0, 0);
+  ctx.restore();
+  ctx.globalAlpha = 1;
 }
 
 function invalidateStaticLayer() { staticLayerDirty = true; cachedHalos = null; }
@@ -650,10 +784,6 @@ function hex2rgba(h, a) {
   return rgba(r, g, b, a);
 }
 
-function mixChannel(a, b, amount) {
-  return Math.round(a * (1 - amount) + b * amount);
-}
-
 function nodeColor(node) {
   return node.__color || cfg.accent;
 }
@@ -674,11 +804,13 @@ function refreshDerivedVisuals() {
     const node = nodes[i];
     node.__color = cfg.nodeColorMode === 'age'
       ? ageColor(node)
-      : ((node.tag && cfg.tagColors[node.tag]) || cfg.accent);
+      : cfg.nodeColorMode === 'folder'
+        ? folderColor(node.folder)
+        : ((node.tag && cfg.tagColors[node.tag]) || cfg.accent);
     node.__labelText = truncateLabel(node.label || node.id, 28);
     node.__labelFontSize = Math.max(10, 11 + (node.importance || 0) * 5);
     if (!node.ghost && (node.importance || 0) >= sceneTuning.labelMinImportance) {
-      ctx.font = `${node.__labelFontSize}px -apple-system, BlinkMacSystemFont, 'Inter', sans-serif`;
+      ctx.font = `${node.__labelFontSize}px ${labelFontStack()}`;
       node.__labelWidth = ctx.measureText(node.__labelText).width;
     } else {
       node.__labelWidth = 0;
@@ -687,13 +819,11 @@ function refreshDerivedVisuals() {
 
   for (let i = 0; i < links.length; i++) {
     const link = links[i];
-    if (sceneTuning.edgeColoringEnabled) {
-      link.__color = (link.source.tag && cfg.tagColors[link.source.tag])
-        || (link.target.tag && cfg.tagColors[link.target.tag])
-        || cfg.accent;
-    } else {
-      link.__color = cfg.accent;
-    }
+    // Edges inherit the source node's resolved color so coloring works for tag,
+    // age, and folder modes alike.
+    link.__color = sceneTuning.edgeColoringEnabled
+      ? (link.source.__color || link.target.__color || cfg.accent)
+      : cfg.accent;
   }
 
   labelCandidates = [...nodes]
@@ -758,10 +888,6 @@ function roundedRectPath(x, y, w, h, r) {
   ctx.quadraticCurveTo(x, y, x + radius, y);
 }
 
-function truncateLabel(text, maxLength) {
-  return text.length > maxLength ? text.slice(0, maxLength - 1) + '…' : text;
-}
-
 async function loadJson(pathname) {
   try {
     const response = await fetch(pathname, { cache: 'no-store' });
@@ -774,15 +900,21 @@ async function loadJson(pathname) {
 
 async function loadCfg() {
   const prevRefreshMs = cfg.refreshMs;
+  const prevCfg = cfg;
+  let raw = null;
   if (SYNTHETIC_SIZE > 0 && SYNTHETIC_CFG) {
-    cfg = normalizeConfig(SYNTHETIC_CFG);
+    raw = normalizeConfig(SYNTHETIC_CFG);
   } else {
     const data = await loadJson('/api/config');
-    if (data) {
-      cfg = normalizeConfig(data);
-    } else {
-      console.warn('config API not available, using defaults');
-    }
+    if (data) raw = normalizeConfig(data);
+    else console.warn('config API not available, using defaults');
+  }
+  if (raw) {
+    __rawCfg = raw;
+    const nextCfg = applyAutoTheme(raw);
+    // Cross-fade out the previous look on a preset-level change.
+    if (__hasRendered && isBigVisualChange(prevCfg, nextCfg)) snapshotForFade();
+    cfg = nextCfg;
   }
   applyBackground();
   refreshSceneTuning();
@@ -799,48 +931,6 @@ async function loadCfg() {
     Object.assign(DEFAULTS, defaults);
   }
 })();
-
-function hashStr(s) {
-  let h = 0;
-  if (!s) return 0;
-  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-  return h;
-}
-
-function graphHashFast(graph) {
-  const ns = graph.nodes;
-  const ls = graph.links;
-  const nLen = ns.length;
-  const lLen = ls.length;
-  let h = (nLen ^ (lLen * 2654435761)) | 0;
-  const sample = nLen < 16 ? nLen : 16;
-  for (let i = 0; i < sample; i++) h ^= hashStr(ns[i].id);
-  for (let i = 0; i < sample; i++) h ^= hashStr(ns[nLen - 1 - i].id);
-  let linkSum = 0;
-  for (let i = 0; i < lLen; i++) {
-    const link = ls[i];
-    const s = typeof link.source === 'string' ? link.source : (link.source && link.source.id) || '';
-    const t = typeof link.target === 'string' ? link.target : (link.target && link.target.id) || '';
-    linkSum = (linkSum + hashStr(s) + Math.imul(hashStr(t), 31)) | 0;
-  }
-  return nLen + ':' + lLen + ':' + ((h ^ linkSum) >>> 0);
-}
-
-function graphHashSlow(graph) {
-  const nodePart = graph.nodes
-    .map(node => `${node.id}|${node.tag || ''}`)
-    .sort()
-    .join('\n');
-  const linkPart = graph.links
-    .map(link => {
-      const source = typeof link.source === 'string' ? link.source : link.source?.id;
-      const target = typeof link.target === 'string' ? link.target : link.target?.id;
-      return `${source || ''}->${target || ''}`;
-    })
-    .sort()
-    .join('\n');
-  return `${nodePart}\n---\n${linkPart}`;
-}
 
 function graphHash(graph) {
   return cfg.fastHash === false ? graphHashSlow(graph) : graphHashFast(graph);
@@ -956,6 +1046,7 @@ async function loadGraph(options = {}) {
       node.r = node.ghost ? 1.5 + Math.sqrt(degreeCount) * 0.8 : 2.2 + Math.sqrt(degreeCount) * 1.45;
       node.importance = Math.min(1, degreeCount / maxDeg);
     });
+    __rankValid = false; // node set / importances changed; rebuild the ranking lazily
 
     // Resolve link source/target strings to node object refs. d3.forceLink
     // used to do this on the main thread; the worker now owns the sim, so we
@@ -1106,6 +1197,9 @@ function updateParticles() {
 
 function drawParticles() {
   if (!sceneTuning.particlesEnabled) return;
+  // Group by color so fillStyle is set once per color; per-particle alpha is
+  // applied via globalAlpha, avoiding an rgba() string allocation per particle.
+  particleDrawGroups.clear();
   for (let i = 0; i < particlePool.length; i++) {
     const particle = particlePool[i];
     if (!particle.active) continue;
@@ -1116,13 +1210,21 @@ function drawParticles() {
     const y = source.__fy + (target.__fy - source.__fy) * particle.t;
     if (!finiteNumber(x) || !finiteNumber(y)) continue;
     const color = sceneTuning.edgeColoringEnabled ? edgeColor(particle.link) : cfg.accent;
-    const [r, g, b] = hexToRGB(color);
     const fade = particle.t < 0.1 ? particle.t / 0.1 : particle.t > 0.88 ? (1 - particle.t) / 0.12 : 1;
-    ctx.beginPath();
-    ctx.arc(x, y, particle.size, 0, Math.PI * 2);
-    ctx.fillStyle = rgba(r, g, b, particle.alpha * fade);
-    ctx.fill();
+    let arr = particleDrawGroups.get(color);
+    if (!arr) { arr = []; particleDrawGroups.set(color, arr); }
+    arr.push(x, y, particle.size, particle.alpha * fade);
   }
+  for (const [color, arr] of particleDrawGroups) {
+    ctx.fillStyle = color;
+    for (let i = 0; i < arr.length; i += 4) {
+      ctx.globalAlpha = Math.min(1, arr[i + 3]);
+      ctx.beginPath();
+      ctx.arc(arr[i], arr[i + 1], arr[i + 2], 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
 }
 
 function buildClusterHalos() {
@@ -1233,12 +1335,17 @@ function drawEdges() {
     }
     const color = edgeColor(link);
     const alphaBucket = Math.max(1, Math.min(8, Math.round(alpha * 8)));
-    const widthBucket = lineWidth < 0.75 ? 0.6 : lineWidth < 1.1 ? 0.95 : 1.3;
-    const key = `${color}|${alphaBucket}|${widthBucket}|${style}`;
-    let group = edgeGroups.get(key);
+    const widthIdx = lineWidth < 0.75 ? 0 : lineWidth < 1.1 ? 1 : 2;
+    // Nested color -> bucket map avoids allocating a fresh string key per link
+    // every frame (up to ~120k throwaway strings/frame on large vaults). Style
+    // is constant per call, so it isn't part of the key. Output is identical.
+    let byColor = edgeGroups.get(color);
+    if (!byColor) { byColor = new Map(); edgeGroups.set(color, byColor); }
+    const bucketIdx = (alphaBucket - 1) * 3 + widthIdx;
+    let group = byColor.get(bucketIdx);
     if (!group) {
-      group = { color, alpha: alphaBucket / 8, lineWidth: widthBucket, segments: [] };
-      edgeGroups.set(key, group);
+      group = { color, alpha: alphaBucket / 8, lineWidth: WIDTH_BUCKETS[widthIdx], segments: [] };
+      byColor.set(bucketIdx, group);
     }
     group.segments.push(
       link.source.__fx,
@@ -1248,7 +1355,8 @@ function drawEdges() {
     );
   }
   const isCurve = style === 'curve';
-  for (const [, group] of edgeGroups) {
+  for (const [, byColor] of edgeGroups)
+  for (const [, group] of byColor) {
     ctx.strokeStyle = group.color;
     ctx.globalAlpha = Math.min(1, group.alpha);
     ctx.lineWidth = group.lineWidth;
@@ -1286,12 +1394,14 @@ function drawNodes() {
   const glowIntensity = clamp(cfg.glowIntensity ?? 1, 0, 1);
   const glowEnabled = sceneTuning.glowEnabled && glowIntensity > 0;
   nodeGroups.clear();
+  __drawnNodes = 0;
 
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
     if (cap && node.__renderable === false) continue;
     if (cullActive && node.__vFrame !== tick) continue;
     if (!finiteNumber(node.__fx) || !finiteNumber(node.__fy)) continue;
+    __drawnNodes++;
     const color = nodeColor(node);
     const importance = node.importance || 0;
     const pulse = Math.sin(tick * sceneTuning.motion.pulseSpeed + node.x * 0.004 + node.y * 0.003) * 0.5 + 0.5;
@@ -1456,7 +1566,7 @@ function drawLabels() {
 
     const label = node.__labelText;
     const fontSize = node.__labelFontSize;
-    ctx.font = `${fontSize}px -apple-system, BlinkMacSystemFont, 'Inter', sans-serif`;
+    ctx.font = `${fontSize}px ${labelFontStack()}`;
     const textWidth = node.__labelWidth;
     const x = node.__fx;
     const y = node.__fy + node.r + 16;
@@ -1501,7 +1611,13 @@ function draw() {
   buildFramePoints();
   maybeRebuildQuadtree();
   markVisibleNodes();
-  ctx.clearRect(0, 0, innerWidth, innerHeight);
+  // The context is opaque (alpha:false), so a bare clearRect paints solid black
+  // regardless of cfg.background. Presets with backgroundGradient off never fill
+  // the canvas otherwise, which made every flat/light theme (e.g. Mist) render
+  // on black instead of its configured background. Paint the base color here;
+  // the (opaque) gradient still overrides it for gradient presets.
+  ctx.fillStyle = cfg.background;
+  ctx.fillRect(0, 0, innerWidth, innerHeight);
   // staticLayerDirty is set on sim start/stop by loadGraph and worker onmessage,
   // not per-frame. The 500ms throttle in drawStaticLayer handles mid-sim rebuilds.
   drawStaticLayer();
@@ -1509,6 +1625,8 @@ function draw() {
   drawParticles();
   drawNodes();
   drawLabels();
+  drawFadeOverlay();
+  __hasRendered = true;
 }
 
 function stopStateSync() {
@@ -1584,14 +1702,33 @@ function isSceneCalm() {
 }
 
 function breathe() {
+  // When the desktop is asleep, the Space is switched away, or the wallpaper
+  // is otherwise not being shown, stop drawing entirely. Browsers already
+  // throttle rAF for hidden documents, but wallpaper hosts can keep a covered
+  // webview "visible"; this guarantees zero render work while hidden and
+  // resumes within 250ms of the wallpaper coming back. Big battery win on
+  // laptops that sleep the display.
+  if (typeof document !== 'undefined' && document.hidden && !ONESHOT && SYNTHETIC_SIZE === 0) {
+    markConfigChanged(); // treat the wake as activity so the scene isn't "calm"
+    setTimeout(breathe, 250);
+    return;
+  }
   tick += 1;
   if (tick % sceneTuning.motion.particleSpawnEvery === 0) spawnParticles();
   updateParticles();
   draw();
   if (PERF_ENABLED) __perfFrame();
-  // 4a: drop to 30fps via setTimeout when the scene is calm; otherwise rAF.
-  if (isSceneCalm()) setTimeout(breathe, 33);
-  else requestAnimationFrame(breathe);
+  // 4a: drop to 30fps when the scene is calm; after a longer calm spell step down
+  // again to ~15fps so a static wallpaper costs almost nothing. Any change
+  // (sim restart, flare, config edit) resets isSceneCalm and escalates back to rAF.
+  if (isSceneCalm()) {
+    if (!__calmSince) __calmSince = performance.now();
+    const idleMs = performance.now() - __calmSince;
+    setTimeout(breathe, idleMs > 30000 ? 66 : 33);
+  } else {
+    __calmSince = 0;
+    requestAnimationFrame(breathe);
+  }
 }
 
 applyBackground();
@@ -1604,6 +1741,9 @@ applyBackground();
       // Advance tick a handful of times so pulse/flare feel non-zero, then
       // paint one final frame. Used by the screenshot script.
       for (let i = 0; i < 4; i++) { tick += 1; draw(); }
+      // Expose a machine-readable render result in the title so the renderer
+      // smoke test can assert (via --dump-dom) that nodes actually painted.
+      try { document.title = `OLW drawn=${__drawnNodes} nodes=${nodes.length}`; } catch (e) {}
       return;
     }
     breathe();

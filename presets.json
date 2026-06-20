@@ -134,6 +134,7 @@
     "background": "#071018",
     "thumbnail": "/docs/presets/blueprint.png",
     "config": {
+      "labelFont": "mono",
       "accent": "#e8f3ff",
       "background": "#071018",
       "linkOpacity": 0.32,
@@ -166,6 +167,7 @@
     "background": "#efe4c9",
     "thumbnail": "/docs/presets/parchment.png",
     "config": {
+      "labelFont": "serif",
       "accent": "#6b4a2b",
       "background": "#efe4c9",
       "linkOpacity": 0.28,
@@ -486,6 +488,7 @@
     "background": "#f5f0e8",
     "thumbnail": "/docs/presets/ink.png",
     "config": {
+      "labelFont": "serif",
       "accent": "#1a1a1a",
       "background": "#f5f0e8",
       "linkOpacity": 0.05,
@@ -518,6 +521,7 @@
     "background": "#f4e4c1",
     "thumbnail": "/docs/presets/library.png",
     "config": {
+      "labelFont": "serif",
       "accent": "#c4956a",
       "background": "#f4e4c1",
       "linkOpacity": 0.15,

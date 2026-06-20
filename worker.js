@@ -13,6 +13,7 @@ let generation = 0;
 let sharedPositions = null;
 let useSharedPositions = false;
 let lastTickPostAt = 0;
+let snapBuf = null; // reused snapshot buffer for the non-shared fallback path
 
 const SNAPSHOT_INTERVAL_MS = 50;
 
@@ -65,16 +66,16 @@ function sendSnapshot(type, force) {
   }
 
   const len = nodes.length;
-  const buffer = new Float32Array(len * 2);
+  // Reuse one buffer across ticks instead of allocating each time. We post a
+  // (structured-clone) copy rather than transferring, so the buffer stays owned
+  // by the worker and the main thread receives its own copy.
+  if (!snapBuf || snapBuf.length !== len * 2) snapBuf = new Float32Array(len * 2);
   for (let i = 0; i < len; i++) {
     const node = nodes[i];
-    buffer[i * 2] = Number.isFinite(node.x) ? node.x : 0;
-    buffer[i * 2 + 1] = Number.isFinite(node.y) ? node.y : 0;
+    snapBuf[i * 2] = Number.isFinite(node.x) ? node.x : 0;
+    snapBuf[i * 2 + 1] = Number.isFinite(node.y) ? node.y : 0;
   }
-  postMessage(
-    { type, buffer: buffer.buffer, alpha: sim ? sim.alpha() : 0, generation, count: len },
-    [buffer.buffer]
-  );
+  postMessage({ type, buffer: snapBuf.buffer, alpha: sim ? sim.alpha() : 0, generation, count: len });
 }
 
 self.onmessage = (e) => {

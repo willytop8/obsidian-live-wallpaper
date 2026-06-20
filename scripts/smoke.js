@@ -10,8 +10,11 @@ const {
   applyFsEventToState,
   rebuildGraphState,
   materializeGraph,
-  scanVaultEntries
+  scanVaultEntries,
+  extractTag,
+  extractWikilinks
 } = require('../parser.js');
+const core = require('../renderer-core.js');
 
 function assert(condition, message) {
   if (!condition) {
@@ -377,9 +380,52 @@ async function runIncrementalWatcher(tmpRoot) {
   assert(!state.entries.has(deltaPath), 'expected Delta to be removed from entries after unlinkDir');
 }
 
+function runRendererCore() {
+  // Pure helpers shared with the renderer.
+  assert(core.clamp(5, 0, 3) === 3 && core.clamp(-1, 0, 3) === 0 && core.clamp(2, 0, 3) === 2, 'clamp bounds');
+  assert(core.truncateLabel('hello', 10) === 'hello', 'truncateLabel short unchanged');
+  assert(core.truncateLabel('abcdefghij', 5) === 'abcd…', 'truncateLabel truncates with ellipsis');
+  assert(core.mixChannel(0, 100, 0.5) === 50, 'mixChannel midpoint');
+  assert(core.mixChannel(10, 20, 0) === 10 && core.mixChannel(10, 20, 1) === 20, 'mixChannel endpoints');
+  assert(core.hashStr('') === 0, 'hashStr empty is 0');
+  assert(core.hashStr('abc') === core.hashStr('abc'), 'hashStr deterministic');
+  assert(core.hashStr('abc') !== core.hashStr('abd'), 'hashStr differs for different input');
+  assert(/^#[0-9a-f]{6}$/.test(core.hslToHex(210, 60, 64)), 'hslToHex returns a 6-digit hex');
+  assert(core.hslToHex(0, 0, 0) === '#000000' && core.hslToHex(0, 0, 100) === '#ffffff', 'hslToHex black/white');
+
+  const g1 = { nodes: [{ id: 'a' }, { id: 'b' }], links: [{ source: 'a', target: 'b' }] };
+  const g2 = { nodes: [{ id: 'a' }, { id: 'b' }], links: [{ source: 'a', target: 'b' }] };
+  const g3 = { nodes: [{ id: 'a' }, { id: 'c' }], links: [{ source: 'a', target: 'c' }] };
+  assert(core.graphHashFast(g1) === core.graphHashFast(g2), 'graphHashFast stable for identical graphs');
+  assert(core.graphHashFast(g1) !== core.graphHashFast(g3), 'graphHashFast differs for different graphs');
+  assert(core.graphHashSlow(g1) === core.graphHashSlow(g2), 'graphHashSlow stable for identical graphs');
+  // Object-form links (source/target resolved to node refs) hash the same as string-form.
+  const g1obj = { nodes: g1.nodes, links: [{ source: { id: 'a' }, target: { id: 'b' } }] };
+  assert(core.graphHashFast(g1obj) === core.graphHashFast(g1), 'graphHashFast handles object link refs');
+}
+
+function runParserFuzz() {
+  // extractTag: frontmatter flow, block, and inline forms; inline tags with slashes.
+  assert(extractTag('---\ntags: [project, idea]\n---\nbody') === 'project', 'flow frontmatter tag');
+  assert(extractTag('---\ntags:\n  - alpha\n  - beta\n---\n') === 'alpha', 'block frontmatter tag');
+  assert(extractTag('no frontmatter but #inline here') === 'inline', 'inline tag');
+  assert(extractTag('nested #area/sub tag') === 'area/sub', 'nested inline tag keeps slash');
+  assert(extractTag('plain text, no tags at all') === null, 'no tag returns null');
+  assert(extractTag('email like a#b should not count as tag mid-word') === null, 'no leading-space tag is ignored');
+
+  // extractWikilinks: plain, aliased, heading, dedupe of forms, ignore empties.
+  assert(JSON.stringify(extractWikilinks('see [[Note A]] and [[Note B]]')) === JSON.stringify(['Note A', 'Note B']), 'plain wikilinks');
+  assert(extractWikilinks('[[Target|alias text]]')[0] === 'Target', 'aliased wikilink uses target');
+  assert(extractWikilinks('[[Target#Heading]]')[0] === 'Target', 'heading wikilink uses target');
+  assert(extractWikilinks('[[  ]] and [[ Real ]]').length === 1, 'empty wikilink ignored, whitespace trimmed');
+  assert(extractWikilinks('no links here').length === 0, 'no wikilinks');
+}
+
 async function main() {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'obsidian-live-wallpaper-smoke-'));
   try {
+    runRendererCore();
+    runParserFuzz();
     await runHappyPath(tmpRoot);
     await runDuplicateBasenames(tmpRoot);
     await runGhostNodes(tmpRoot);

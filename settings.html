@@ -116,6 +116,18 @@
     <div><label>Background</label></div>
     <input type="color" id="background" value="#0a0a0f">
   </div>
+  <div class="row">
+    <div><label>Auto light/dark</label><div class="hint">Switch to the light colors below when your OS is in light mode</div></div>
+    <label class="toggle"><input type="checkbox" id="autoTheme"><span class="slider"></span></label>
+  </div>
+  <div class="row">
+    <div><label>Light accent</label><div class="hint">Used when Auto light/dark is on</div></div>
+    <input type="color" id="lightAccent" value="#39407a">
+  </div>
+  <div class="row">
+    <div><label>Light background</label></div>
+    <input type="color" id="lightBackground" value="#ece6d6">
+  </div>
 </div>
 
 <div class="section">
@@ -147,6 +159,17 @@
       <select id="nodeColorMode">
         <option value="tag">By tag</option>
         <option value="age">By age</option>
+        <option value="folder">By folder</option>
+      </select>
+    </div>
+  </div>
+  <div class="row">
+    <div><label>Label font</label><div class="hint">Font family for hub labels</div></div>
+    <div class="controls">
+      <select id="labelFont">
+        <option value="sans">Sans</option>
+        <option value="mono">Mono</option>
+        <option value="serif">Serif</option>
       </select>
     </div>
   </div>
@@ -292,6 +315,10 @@ function applyForm() {
   document.getElementById('glowIntensityVal').textContent = (cfg.glowIntensity ?? 1).toFixed(2);
   document.getElementById('edgeStyle').value = cfg.edgeStyle ?? 'line';
   document.getElementById('nodeColorMode').value = cfg.nodeColorMode ?? 'tag';
+  document.getElementById('labelFont').value = cfg.labelFont ?? 'sans';
+  document.getElementById('autoTheme').checked = cfg.autoTheme === true;
+  document.getElementById('lightAccent').value = cfg.lightAccent ?? '#39407a';
+  document.getElementById('lightBackground').value = cfg.lightBackground ?? '#ece6d6';
   document.getElementById('edgeColoring').checked = cfg.edgeColoring !== false;
   document.getElementById('showUnresolvedLinks').checked = cfg.showUnresolvedLinks !== false;
   document.getElementById('clusterByTag').checked = cfg.clusterByTag !== false;
@@ -492,8 +519,12 @@ function renderTags() {
 document.getElementById('accent').addEventListener('change', e => save({ accent: e.target.value }));
 document.getElementById('background').addEventListener('change', e => save({ background: e.target.value }));
 
+// Colors (light theme)
+document.getElementById('lightAccent').addEventListener('change', e => save({ lightAccent: e.target.value }));
+document.getElementById('lightBackground').addEventListener('change', e => save({ lightBackground: e.target.value }));
+
 // Toggles
-['nodeGlow','edgeColoring','showUnresolvedLinks','clusterByTag','clusterHalos','particles','backgroundGradient','depthOfField','noteFlare','hubLabels','autoScaleLargeVaults'].forEach(id => {
+['nodeGlow','edgeColoring','showUnresolvedLinks','clusterByTag','clusterHalos','particles','backgroundGradient','depthOfField','noteFlare','hubLabels','autoScaleLargeVaults','autoTheme'].forEach(id => {
   document.getElementById(id).addEventListener('change', e => save({ [id]: e.target.checked }));
 });
 
@@ -501,6 +532,7 @@ document.getElementById('background').addEventListener('change', e => save({ bac
 document.getElementById('motionMode').addEventListener('change', e => save({ motionMode: e.target.value }));
 document.getElementById('edgeStyle').addEventListener('change', e => save({ edgeStyle: e.target.value }));
 document.getElementById('nodeColorMode').addEventListener('change', e => save({ nodeColorMode: e.target.value }));
+document.getElementById('labelFont').addEventListener('change', e => save({ labelFont: e.target.value }));
 
 // Sliders
 document.getElementById('glowIntensity').addEventListener('input', e => {
