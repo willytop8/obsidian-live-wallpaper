@@ -295,11 +295,20 @@ function hasHiddenSegment(filePath, vaultPath) {
   return rel.split(path.sep).some(part => part.startsWith('.'));
 }
 
-function parseMarkdownEntry(filePath) {
+// True when filePath is not vaultPath itself and not a descendant of it. Used
+// instead of a raw filePath.startsWith(vaultPath) string check, which would
+// incorrectly match an unrelated sibling directory that happens to share the
+// prefix (e.g. vaultPath "/vault" matching "/vault-notes/x.md").
+function isOutsideVault(filePath, vaultPath) {
+  const rel = path.relative(vaultPath, filePath);
+  return rel === '..' || rel.startsWith('..' + path.sep);
+}
+
+async function parseMarkdownEntry(filePath) {
   try {
-    const stat = fs.statSync(filePath);
+    const stat = await fs.promises.stat(filePath);
     const basename = path.basename(filePath, '.md');
-    const content = fs.readFileSync(filePath, 'utf8');
+    const content = await fs.promises.readFile(filePath, 'utf8');
     return {
       path: filePath,
       basename,
@@ -307,35 +316,77 @@ function parseMarkdownEntry(filePath) {
       tag: extractTag(content),
       wikilinks: extractWikilinks(content)
     };
-  } catch (_) {
+  } catch (e) {
+    // ENOENT is expected churn (a file can vanish between being listed and
+    // read, especially mid-scan on a large vault); anything else — permission
+    // errors, encoding issues, other I/O failures — is unexpected, so log it
+    // rather than let the note silently disappear from the graph.
+    if (e.code !== 'ENOENT') {
+      console.warn(`note: skipped ${filePath} (${e.code || e.message})`);
+    }
     return null;
   }
 }
 
-function scanVaultEntries(vaultPath, ignorePaths) {
-  const patterns = ignorePaths || [];
-  const entries = new Map();
+// Runs `fn` over `items` with at most `limit` in flight at once. Used so
+// scanning a large vault doesn't try to open tens of thousands of file
+// descriptors concurrently.
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+const SCAN_CONCURRENCY = 64;
+
+async function collectMarkdownFiles(vaultPath, patterns) {
+  const files = [];
   // Track resolved real directory paths so a symlink cycle (e.g. a folder that
   // links back to an ancestor) can't drive the walk into infinite recursion.
   const visitedDirs = new Set();
-  (function walk(dir) {
+  async function walk(dir) {
     let realDir;
-    try { realDir = fs.realpathSync(dir); }
+    try { realDir = await fs.promises.realpath(dir); }
     catch (_) { return; }
     if (visitedDirs.has(realDir)) return;
     visitedDirs.add(realDir);
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    let dirEntries;
+    try { dirEntries = await fs.promises.readdir(dir, { withFileTypes: true }); }
+    catch (_) { return; }
+    for (const entry of dirEntries) {
       if (entry.name.startsWith('.')) continue;
       const fullPath = path.join(dir, entry.name);
       if (isIgnoredPath(fullPath, vaultPath, patterns)) continue;
       if (entry.isDirectory()) {
-        walk(fullPath);
+        await walk(fullPath);
       } else if (entry.isFile() && entry.name.endsWith('.md')) {
-        const parsed = parseMarkdownEntry(fullPath);
-        if (parsed) entries.set(fullPath, parsed);
+        files.push(fullPath);
       }
     }
-  })(vaultPath);
+  }
+  await walk(vaultPath);
+  return files;
+}
+
+// Async + concurrency-limited so scanning a large vault (the project targets
+// vaults with tens of thousands of notes) doesn't block the event loop for
+// seconds at a time the way a fully synchronous readdirSync/readFileSync walk
+// would.
+async function scanVaultEntries(vaultPath, ignorePaths) {
+  const patterns = ignorePaths || [];
+  const files = await collectMarkdownFiles(vaultPath, patterns);
+  const parsed = await mapWithConcurrency(files, SCAN_CONCURRENCY, parseMarkdownEntry);
+  const entries = new Map();
+  for (let i = 0; i < files.length; i++) {
+    if (parsed[i]) entries.set(files[i], parsed[i]);
+  }
   return entries;
 }
 
@@ -437,16 +488,16 @@ function serializeGraph(result) {
   return JSON.stringify({ nodes: result.nodes, links: result.links });
 }
 
-function writeGraphFile(graphJson, outPath = OUT) {
+async function writeGraphFile(graphJson, outPath = OUT) {
   const tmp = outPath + '.tmp';
-  fs.writeFileSync(tmp, graphJson);
-  fs.renameSync(tmp, outPath);
+  await fs.promises.writeFile(tmp, graphJson);
+  await fs.promises.rename(tmp, outPath);
 }
 
-function buildGraph(vaultPath, outPath = OUT, options = {}) {
-  const entries = scanVaultEntries(vaultPath, options.ignorePaths);
+async function buildGraph(vaultPath, outPath = OUT, options = {}) {
+  const entries = await scanVaultEntries(vaultPath, options.ignorePaths);
   const result = materializeGraph(entries, vaultPath, options);
-  writeGraphFile(serializeGraph(result), outPath);
+  await writeGraphFile(serializeGraph(result), outPath);
   return result;
 }
 
@@ -531,7 +582,7 @@ function broadcastEvent(state, event, payload) {
   }
 }
 
-function rebuildGraphState(state, options = {}) {
+async function rebuildGraphState(state, options = {}) {
   const result = materializeGraph(state.entries, state.cfg.vaultPath, {
     showUnresolvedLinks: state.cfg.showUnresolvedLinks
   });
@@ -539,7 +590,7 @@ function rebuildGraphState(state, options = {}) {
   state.graphJson = serializeGraph(result);
   state.graphVersion = (state.graphVersion || 0) + 1;
   if (options.writeToDisk !== false) {
-    writeGraphFile(state.graphJson, state.outPath);
+    await writeGraphFile(state.graphJson, state.outPath);
   }
   const ghostCount = result.nodes.filter(node => node.ghost).length;
   const ghostMsg = ghostCount > 0 ? `, ${ghostCount} unresolved` : '';
@@ -547,9 +598,9 @@ function rebuildGraphState(state, options = {}) {
   return result;
 }
 
-function applyFsEventToState(state, event, filePath) {
+async function applyFsEventToState(state, event, filePath) {
   if (typeof filePath !== 'string') return false;
-  if (!filePath.startsWith(state.cfg.vaultPath)) return false;
+  if (isOutsideVault(filePath, state.cfg.vaultPath)) return false;
 
   if (event === 'unlinkDir') {
     let removed = false;
@@ -575,11 +626,15 @@ function applyFsEventToState(state, event, filePath) {
     return false;
   }
 
-  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+  let stat;
+  try {
+    stat = await fs.promises.stat(filePath);
+  } catch (_) {
     return false;
   }
+  if (!stat.isFile()) return false;
 
-  const nextEntry = parseMarkdownEntry(filePath);
+  const nextEntry = await parseMarkdownEntry(filePath);
   if (!nextEntry) return false;
   const prev = state.entries.get(filePath);
   state.entries.set(filePath, nextEntry);
@@ -656,7 +711,7 @@ function createRequestHandler(state) {
         serveBuffer(res, JSON.stringify(state.safeConfig), 'application/json');
         broadcastEvent(state, 'config', { version: state.configVersion });
         if (Object.prototype.hasOwnProperty.call(patch, 'showUnresolvedLinks')) {
-          rebuildGraphState(state);
+          await rebuildGraphState(state);
           broadcastEvent(state, 'graph', { version: state.graphVersion });
         }
       } catch (e) {
@@ -706,7 +761,7 @@ function createRequestHandler(state) {
   };
 }
 
-function startApp(options = {}) {
+async function startApp(options = {}) {
   const configPath = options.configPath || cfgPath;
   const outPath = options.outPath || path.join(path.dirname(configPath), 'graph.json');
   if (!fs.existsSync(configPath)) {
@@ -721,7 +776,7 @@ function startApp(options = {}) {
     configPath,
     outPath,
     discoveredTags: {},
-    entries: scanVaultEntries(cfg.vaultPath, cfg.ignorePaths),
+    entries: await scanVaultEntries(cfg.vaultPath, cfg.ignorePaths),
     graphJson: '',
     graphVersion: 0,
     configVersion: 1,
@@ -730,14 +785,14 @@ function startApp(options = {}) {
 
   const server = http.createServer(createRequestHandler(state));
 
-  const rebuild = () => {
-    const result = rebuildGraphState(state);
+  const rebuild = async () => {
+    const result = await rebuildGraphState(state);
     broadcastEvent(state, 'graph', { version: state.graphVersion });
     return result;
   };
 
   try {
-    rebuild();
+    await rebuild();
   } catch (e) {
     console.error(`startup failed: ${e.message}`);
     process.exit(1);
@@ -770,7 +825,7 @@ function startApp(options = {}) {
     state.safeConfig = nextSafe;
     state.configVersion += 1;
     broadcastEvent(state, 'config', { version: state.configVersion });
-    if (unresolvedChanged) rebuild();
+    if (unresolvedChanged) rebuild().catch(e => console.error(`build failed: ${e.message}`));
     console.log('config.json reloaded');
   }
 
@@ -787,11 +842,7 @@ function startApp(options = {}) {
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       debounceTimer = null;
-      try {
-        rebuild();
-      } catch (e) {
-        console.error(`build failed: ${e.message}`);
-      }
+      rebuild().catch(e => console.error(`build failed: ${e.message}`));
     }, DEBOUNCE_MS);
   };
 
@@ -807,13 +858,9 @@ function startApp(options = {}) {
   });
 
   watcher.on('all', (event, filePath) => {
-    try {
-      if (applyFsEventToState(state, event, filePath)) {
-        debouncedRebuild();
-      }
-    } catch (e) {
-      console.error(`watch update failed: ${e.message}`);
-    }
+    applyFsEventToState(state, event, filePath)
+      .then(changed => { if (changed) debouncedRebuild(); })
+      .catch(e => console.error(`watch update failed: ${e.message}`));
   }).on('error', e => {
     console.error('watcher error:', e.message);
   });
@@ -850,7 +897,10 @@ function startApp(options = {}) {
 }
 
 if (require.main === module) {
-  startApp();
+  startApp().catch(e => {
+    console.error(`startup failed: ${e.message}`);
+    process.exit(1);
+  });
 }
 
 module.exports = {

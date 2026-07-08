@@ -41,9 +41,16 @@
     const nLen = ns.length;
     const lLen = ls.length;
     let h = (nLen ^ (lLen * 2654435761)) | 0;
-    const sample = nLen < 16 ? nLen : 16;
-    for (let i = 0; i < sample; i++) h ^= hashStr(ns[i].id);
-    for (let i = 0; i < sample; i++) h ^= hashStr(ns[nLen - 1 - i].id);
+    // Fold every node (not just a first/last-16 sample) so a change anywhere in
+    // a large graph — e.g. renaming a link-less node in the middle — actually
+    // changes the hash. Still O(n) with cheap per-node work, unlike
+    // graphHashSlow's sort+join. Tag is folded in too since it affects
+    // coloring/clustering and graphHashSlow already treats it as significant.
+    for (let i = 0; i < nLen; i++) {
+      const node = ns[i];
+      h = (h + Math.imul(hashStr(node.id) ^ (i + 1), 2246822519)) | 0;
+      if (node.tag) h ^= hashStr(node.tag);
+    }
     let linkSum = 0;
     for (let i = 0; i < lLen; i++) {
       const link = ls[i];
