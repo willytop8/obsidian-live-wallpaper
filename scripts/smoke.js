@@ -1,6 +1,8 @@
 const fs = require('fs');
+const net = require('net');
 const os = require('os');
 const path = require('path');
+const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const {
   buildGraph,
@@ -12,7 +14,8 @@ const {
   materializeGraph,
   scanVaultEntries,
   extractTag,
-  extractWikilinks
+  extractWikilinks,
+  isIgnoredPath
 } = require('../parser.js');
 const core = require('../renderer-core.js');
 
@@ -36,6 +39,9 @@ function createMockRequest(method, url, body, headers = {}) {
   req.method = method;
   req.url = url;
   req.headers = headers;
+  // readBody() calls req.destroy() on the oversized-body (413) path; a real
+  // http.IncomingMessage has this, the mock needs a stand-in too.
+  req.destroy = () => {};
   process.nextTick(() => {
     if (body !== undefined) {
       req.emit('data', Buffer.from(body));
@@ -46,7 +52,12 @@ function createMockRequest(method, url, body, headers = {}) {
 }
 
 function createMockResponse() {
-  return {
+  // A real http.ServerResponse is a Writable stream (and thus an EventEmitter);
+  // serveFile() uses stream.pipe(res), which needs dest.on(...) to exist and
+  // dest.write() to signal "no backpressure" by returning true — otherwise
+  // pipe() pauses the source waiting for a 'drain' this mock never emits.
+  const res = new EventEmitter();
+  return Object.assign(res, {
     statusCode: 200,
     headers: {},
     body: '',
@@ -57,12 +68,16 @@ function createMockResponse() {
     },
     write(chunk = '') {
       this.body += chunk;
+      return true;
     },
     end(chunk = '') {
       this.body += chunk;
       this.writableEnded = true;
+    },
+    destroy() {
+      this.writableEnded = true;
     }
-  };
+  });
 }
 
 async function runHandler(handler, method, url, body, headers = {}) {
@@ -387,6 +402,132 @@ async function runIncrementalWatcher(tmpRoot) {
   assert(siblingResult === false, 'expected sibling-directory path to be rejected as outside the vault');
 }
 
+async function runDocsRouteGuard() {
+  const state = { cfg: { vaultPath: '/unused' } };
+  const handler = createRequestHandler(state);
+
+  // A real docs asset must be servable.
+  const okRes = await runHandler(handler, 'GET', '/docs/perf-roadmap.md');
+  assert(okRes.statusCode === 200, `expected 200 for a real docs asset, got ${okRes.statusCode}`);
+
+  // Traversal attempts must not escape the docs directory and reach arbitrary
+  // project files. (The WHATWG URL parser already collapses ".." segments in
+  // req.url before the handler ever sees `url`, and the /docs/ handler's own
+  // containment check backs that up — this asserts the endpoint as a whole
+  // can't be used to read files outside docs/, regardless of which layer stops it.)
+  const traversalRes = await runHandler(handler, 'GET', '/docs/../parser.js');
+  assert(traversalRes.statusCode === 404, `expected 404 for a docs traversal attempt, got ${traversalRes.statusCode}`);
+
+  const traversalRes2 = await runHandler(handler, 'GET', '/docs/../../etc/passwd');
+  assert(traversalRes2.statusCode === 404, `expected 404 for a deep docs traversal attempt, got ${traversalRes2.statusCode}`);
+
+  // A disallowed extension within docs/ must be rejected even if the path is otherwise valid.
+  const disallowedExtRes = await runHandler(handler, 'GET', '/docs/perf-roadmap.js');
+  assert(disallowedExtRes.statusCode === 404, `expected 404 for a disallowed docs extension, got ${disallowedExtRes.statusCode}`);
+
+  // Nonexistent file within docs/ must 404, not throw.
+  const missingRes = await runHandler(handler, 'GET', '/docs/does-not-exist.png');
+  assert(missingRes.statusCode === 404, `expected 404 for a missing docs file, got ${missingRes.statusCode}`);
+}
+
+async function run413BodyTooLarge(tmpRoot) {
+  const vaultDir = path.join(tmpRoot, 'body-limit-vault');
+  writeFile(path.join(vaultDir, 'A.md'), '# A\n');
+  const cfg = sanitizePersistedConfig({ vaultPath: vaultDir });
+  const state = {
+    cfg,
+    configPath: path.join(tmpRoot, 'body-limit-config.json'),
+    outPath: path.join(tmpRoot, 'body-limit-graph.json'),
+    discoveredTags: {},
+    graphJson: '',
+    graphVersion: 0
+  };
+  const handler = createRequestHandler(state);
+
+  const oversized = JSON.stringify({ note: 'x'.repeat(1_100_000) });
+  const res = await runHandler(handler, 'POST', '/api/config', oversized, { 'content-type': 'application/json' });
+  assert(res.statusCode === 413, `expected 413 for an oversized request body, got ${res.statusCode}`);
+  const body = JSON.parse(res.body);
+  assert(/too large/.test(body.error), `expected a "too large" error message, got: ${body.error}`);
+}
+
+function runIgnorePathsUnit() {
+  const vaultPath = '/vault';
+  const patterns = ['.obsidian', 'templates'];
+  assert(isIgnoredPath(path.join(vaultPath, '.obsidian', 'config'), vaultPath, patterns) === true,
+    'expected a top-level ignored folder to be ignored');
+  assert(isIgnoredPath(path.join(vaultPath, 'templates', 'Daily.md'), vaultPath, patterns) === true,
+    'expected a nested file under an ignored folder to be ignored');
+  assert(isIgnoredPath(path.join(vaultPath, 'notes', 'Alpha.md'), vaultPath, patterns) === false,
+    'expected a normal note to not be ignored');
+  assert(isIgnoredPath(path.join(vaultPath, 'sub', 'templates', 'x.md'), vaultPath, patterns) === true,
+    'expected an ignored folder name to match at any depth');
+}
+
+async function runIgnorePathsIntegration(tmpRoot) {
+  const vaultDir = path.join(tmpRoot, 'ignore-vault');
+  writeFile(path.join(vaultDir, 'Alpha.md'), '# Alpha\n');
+  writeFile(path.join(vaultDir, 'templates', 'Template.md'), '# Template\n');
+  writeFile(path.join(vaultDir, '.obsidian', 'workspace.md'), '# not a real note, just proving the folder is skipped\n');
+
+  const entries = await scanVaultEntries(vaultDir, ['templates', '.obsidian']);
+  const basenames = Array.from(entries.values()).map(e => e.basename).sort();
+  assert(basenames.length === 1 && basenames[0] === 'Alpha',
+    `expected only Alpha to survive ignorePaths filtering, got [${basenames.join(', ')}]`);
+}
+
+async function runSymlinkCycleGuard(tmpRoot) {
+  const vaultDir = path.join(tmpRoot, 'symlink-vault');
+  writeFile(path.join(vaultDir, 'Alpha.md'), '# Alpha\n');
+  const loopDir = path.join(vaultDir, 'loop');
+  fs.mkdirSync(loopDir, { recursive: true });
+  // A symlink inside the vault that points back to an ancestor directory —
+  // without cycle protection, the recursive walk would recurse forever.
+  try {
+    fs.symlinkSync(vaultDir, path.join(loopDir, 'back-to-root'), 'dir');
+  } catch (e) {
+    console.log(`note: skipping symlink-cycle test (symlinks unavailable: ${e.message})`);
+    return;
+  }
+
+  const entries = await scanVaultEntries(vaultDir);
+  assert(entries.size === 1, `expected the symlink cycle to be short-circuited with only Alpha found, got ${entries.size}`);
+}
+
+async function runEaddrinuse(tmpRoot) {
+  const port = await new Promise((resolve, reject) => {
+    const blocker = net.createServer();
+    blocker.listen(0, '127.0.0.1', () => {
+      const p = blocker.address().port;
+      // Keep the port held for the duration of the child process attempt below.
+      blocker.unref();
+      resolve(p);
+    });
+    blocker.on('error', reject);
+  });
+
+  const vaultDir = path.join(tmpRoot, 'eaddrinuse-vault');
+  writeFile(path.join(vaultDir, 'A.md'), '# A\n');
+  const configPath = path.join(tmpRoot, 'eaddrinuse-config.json');
+  writeJson(configPath, { vaultPath: vaultDir, port });
+
+  // Run in a child process: startApp()'s EADDRINUSE handler calls
+  // process.exit(1) directly, which would kill the test runner itself if
+  // invoked in-process.
+  const child = spawn(process.execPath, [
+    '-e',
+    "require(process.argv[1]).startApp({ configPath: process.argv[2] }).catch(() => {});",
+    path.join(__dirname, '..', 'parser.js'),
+    configPath
+  ]);
+  let stderr = '';
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  const exitCode = await new Promise(resolve => child.on('exit', resolve));
+
+  assert(exitCode === 1, `expected the child process to exit(1) on EADDRINUSE, got ${exitCode}`);
+  assert(/already in use/.test(stderr), `expected an "already in use" message on stderr, got: ${stderr}`);
+}
+
 function runRendererCore() {
   // Pure helpers shared with the renderer.
   assert(core.clamp(5, 0, 3) === 3 && core.clamp(-1, 0, 3) === 0 && core.clamp(2, 0, 3) === 2, 'clamp bounds');
@@ -476,11 +617,17 @@ async function main() {
     runRendererCore();
     runParserFuzz();
     runConfigValidationThrows();
+    runIgnorePathsUnit();
     await runHappyPath(tmpRoot);
     await runDuplicateBasenames(tmpRoot);
     await runGhostNodes(tmpRoot);
     await runConfigPatch(tmpRoot);
     await runIncrementalWatcher(tmpRoot);
+    await runDocsRouteGuard();
+    await run413BodyTooLarge(tmpRoot);
+    await runIgnorePathsIntegration(tmpRoot);
+    await runSymlinkCycleGuard(tmpRoot);
+    await runEaddrinuse(tmpRoot);
     console.log('smoke: ok');
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });

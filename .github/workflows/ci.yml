@@ -24,6 +24,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Lint
+        run: npm run lint
+
       # Provides a Chrome binary so the renderer smoke test (scripts/smoke-render.js)
       # runs for real instead of skipping.
       - name: Set up Chrome

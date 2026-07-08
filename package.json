@@ -57,7 +57,9 @@
     "start": "node parser.js",
     "smoke": "node scripts/smoke.js",
     "smoke:render": "node scripts/smoke-render.js",
-    "test": "npm run smoke && npm run smoke:render"
+    "test": "npm run smoke && npm run smoke:render",
+    "lint": "eslint parser.js bin/cli.js worker.js renderer-core.js scripts/*.js eslint.config.js",
+    "prepublishOnly": "npm run lint && npm test"
   },
   "engines": {
     "node": ">=20"
@@ -65,5 +67,10 @@
   "license": "MIT",
   "dependencies": {
     "chokidar": "^5.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.6.0",
+    "globals": "^17.7.0"
   }
 }
