@@ -404,6 +404,37 @@ function runRendererCore() {
   assert(core.graphHashFast(g1obj) === core.graphHashFast(g1), 'graphHashFast handles object link refs');
 }
 
+function runConfigValidationThrows() {
+  // sanitizePersistedConfig must throw (not process.exit) on invalid input, so that
+  // live-reload callers (parser.js reloadConfigFromDisk) can catch and log-and-ignore a
+  // bad hand-edit to config.json instead of crashing the running server. Regression
+  // test for a bug where requireString called failConfig() -> process.exit() directly.
+  let threw = false;
+  try {
+    sanitizePersistedConfig({ vaultPath: '' });
+  } catch (e) {
+    threw = true;
+    assert(/vaultPath/.test(e.message), 'expected vaultPath validation error message');
+  }
+  assert(threw, 'expected sanitizePersistedConfig to throw on blank vaultPath, not exit');
+
+  threw = false;
+  try {
+    sanitizePersistedConfig({});
+  } catch (e) {
+    threw = true;
+  }
+  assert(threw, 'expected sanitizePersistedConfig to throw when vaultPath is missing');
+
+  threw = false;
+  try {
+    sanitizePersistedConfig('not an object');
+  } catch (e) {
+    threw = true;
+  }
+  assert(threw, 'expected sanitizePersistedConfig to throw on non-object root');
+}
+
 function runParserFuzz() {
   // extractTag: frontmatter flow, block, and inline forms; inline tags with slashes.
   assert(extractTag('---\ntags: [project, idea]\n---\nbody') === 'project', 'flow frontmatter tag');
@@ -426,6 +457,7 @@ async function main() {
   try {
     runRendererCore();
     runParserFuzz();
+    runConfigValidationThrows();
     await runHappyPath(tmpRoot);
     await runDuplicateBasenames(tmpRoot);
     await runGhostNodes(tmpRoot);
