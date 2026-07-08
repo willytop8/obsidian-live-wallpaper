@@ -3,3 +3,7 @@ config.json
 graph.json
 .DS_Store
 Claude-Sessions/
+*.log
+.env*
+*.tgz
+.vscode/
