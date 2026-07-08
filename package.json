@@ -60,10 +60,10 @@
     "test": "npm run smoke && npm run smoke:render"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "license": "MIT",
   "dependencies": {
-    "chokidar": "^3.6.0"
+    "chokidar": "^5.0.0"
   }
 }
