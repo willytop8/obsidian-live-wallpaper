@@ -3,6 +3,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Wallpaper Settings</title>
+<!-- Defense in depth: see index.html's CSP comment — same rationale here.
+     script-src/style-src need 'unsafe-inline' since this page's logic and
+     dynamic styling are inline rather than in external files. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {

@@ -17,6 +17,18 @@ let snapBuf = null; // reused snapshot buffer for the non-shared fallback path
 
 const SNAPSHOT_INTERVAL_MS = 50;
 
+// Node-count tiers driving simulation cost: fewer/weaker forces as the graph
+// grows, so a large vault stays responsive instead of grinding to a crawl.
+const MASSIVE_NODE_THRESHOLD = 3000;
+const LARGE_NODE_THRESHOLD = 600;
+const MEDIUM_NODE_THRESHOLD = 200;
+const SMALL_NODE_THRESHOLD = 50;
+
+// Simulation is considered settled once alpha decays below this and stays
+// there for IDLE_FRAMES_TO_STOP consecutive ticks.
+const IDLE_ALPHA_THRESHOLD = 0.02;
+const IDLE_FRAMES_TO_STOP = 30;
+
 function forceCluster(alpha) {
   if (!clusterByTag) return;
   const centroids = Object.create(null);
@@ -104,22 +116,29 @@ self.onmessage = (e) => {
       return;
     }
 
-    const isMassive = count > 3000;
-    const charge = isMassive ? -4 : count > 600 ? -10 : count > 200 ? -15 : count > 50 ? -25 : -30;
-    const distance = isMassive ? 16 : count > 600 ? 24 : count > 200 ? 30 : 40;
+    const isMassive = count > MASSIVE_NODE_THRESHOLD;
+    const charge = isMassive ? -4
+      : count > LARGE_NODE_THRESHOLD ? -10
+      : count > MEDIUM_NODE_THRESHOLD ? -15
+      : count > SMALL_NODE_THRESHOLD ? -25
+      : -30;
+    const distance = isMassive ? 16
+      : count > LARGE_NODE_THRESHOLD ? 24
+      : count > MEDIUM_NODE_THRESHOLD ? 30
+      : 40;
 
     sim = d3.forceSimulation(nodes)
       .force('link', d3.forceLink(links).id(node => node.id).distance(distance).strength(isMassive ? 0.15 : 0.3))
       .force('charge', d3.forceManyBody().strength(charge).theta(isMassive ? 1.2 : 0.9))
       .force('center', d3.forceCenter(msg.centerX || 0, msg.centerY || 0))
       .force('collide', isMassive ? null : d3.forceCollide().radius(node => (node.r || 4) + 2))
-      .alphaDecay(isMassive ? 0.05 : count > 600 ? 0.03 : 0.02)
-      .velocityDecay(isMassive ? 0.75 : count > 600 ? 0.68 : 0.6)
+      .alphaDecay(isMassive ? 0.05 : count > LARGE_NODE_THRESHOLD ? 0.03 : 0.02)
+      .velocityDecay(isMassive ? 0.75 : count > LARGE_NODE_THRESHOLD ? 0.68 : 0.6)
       .on('tick', () => {
         const alpha = sim.alpha();
-        if (alpha < 0.02) {
+        if (alpha < IDLE_ALPHA_THRESHOLD) {
           idleFrames += 1;
-          if (idleFrames >= 30) {
+          if (idleFrames >= IDLE_FRAMES_TO_STOP) {
             publishPositions();
             sim.stop();
             sendSnapshot('stopped', true);

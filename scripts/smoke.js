@@ -280,7 +280,13 @@ async function runConfigPatch(tmpRoot) {
   };
 
   const handler = createRequestHandler(state);
-  const postHeaders = { 'content-type': 'application/json' };
+  const postHeaders = { 'content-type': 'application/json', host: '127.0.0.1:3000' };
+
+  // DNS-rebinding guard: an untrusted Host header must be rejected before
+  // anything else is even considered, regardless of an otherwise-valid body.
+  const untrustedHostRes = await runHandler(handler, 'POST', '/api/config',
+    JSON.stringify({ hubLabels: true }), { 'content-type': 'application/json', host: 'evil.example.com' });
+  assert(untrustedHostRes.statusCode === 403, `expected 403 for an untrusted Host header, got ${untrustedHostRes.statusCode}`);
 
   // Valid patch: hubLabels + hubLabelCount
   const validRes = await runHandler(handler, 'POST', '/api/config',
@@ -311,12 +317,12 @@ async function runConfigPatch(tmpRoot) {
 
   // Wrong Content-Type header
   const wrongCtRes = await runHandler(handler, 'POST', '/api/config',
-    JSON.stringify({ hubLabels: true }), { 'content-type': 'text/plain' });
+    JSON.stringify({ hubLabels: true }), { 'content-type': 'text/plain', host: '127.0.0.1:3000' });
   assert(wrongCtRes.statusCode === 415, `expected 415 for wrong Content-Type, got ${wrongCtRes.statusCode}`);
 
-  // Missing Content-Type header (no content-type key)
+  // Missing Content-Type header (no content-type key, but still a trusted host)
   const noCtRes = await runHandler(handler, 'POST', '/api/config',
-    JSON.stringify({ hubLabels: true }), {});
+    JSON.stringify({ hubLabels: true }), { host: '127.0.0.1:3000' });
   assert(noCtRes.statusCode === 415, `expected 415 for missing Content-Type, got ${noCtRes.statusCode}`);
 
   // GAP 4: showUnresolvedLinks toggle triggers full rebuild
@@ -445,7 +451,7 @@ async function run413BodyTooLarge(tmpRoot) {
   const handler = createRequestHandler(state);
 
   const oversized = JSON.stringify({ note: 'x'.repeat(1_100_000) });
-  const res = await runHandler(handler, 'POST', '/api/config', oversized, { 'content-type': 'application/json' });
+  const res = await runHandler(handler, 'POST', '/api/config', oversized, { 'content-type': 'application/json', host: '127.0.0.1:3000' });
   assert(res.statusCode === 413, `expected 413 for an oversized request body, got ${res.statusCode}`);
   const body = JSON.parse(res.body);
   assert(/too large/.test(body.error), `expected a "too large" error message, got: ${body.error}`);

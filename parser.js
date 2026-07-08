@@ -61,13 +61,20 @@ const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---/;
 const TAGS_FLOW = /^tags:\s*\[([^\]]*)\]/m;
 const TAGS_BLOCK = /^tags:\s*\r?\n((?:\s*-\s+.+\r?\n?)+)/m;
 const TAGS_INLINE = /(?:^|\s)#([a-zA-Z][\w-/]*)/g;
+// vendor/d3.min.js is pinned by npm version and never changes without a
+// reinstall, so it's safe to cache long. worker.js/renderer-core.js are our
+// own app code and can change on an upgrade — a much shorter TTL keeps a
+// long-lived wallpaper-host browser view from running stale app JS for up to
+// a day after the user updates.
 const STATIC_CACHE_CONTROL = 'public, max-age=86400';
+const APP_ASSET_CACHE_CONTROL = 'public, max-age=300';
 const DYNAMIC_CACHE_CONTROL = 'no-cache';
 const EVENT_HEADERS = {
   'Content-Type': 'text/event-stream',
   'Cache-Control': 'no-cache',
   Connection: 'keep-alive'
 };
+const MAX_BODY_BYTES = 1e6;
 
 function noteId(basename, filePath, vaultPath, duplicatedBasenames) {
   if (!duplicatedBasenames.has(basename)) return basename;
@@ -550,22 +557,41 @@ function serveFile(res, filePath, cacheControl = STATIC_CACHE_CONTROL) {
   }
 }
 
+// The server only ever binds to 127.0.0.1, so a normal cross-origin browser
+// request can't reach it — but DNS rebinding can trick a browser into sending
+// a request with an attacker-controlled hostname to what it still resolves as
+// 127.0.0.1. Checking the Host header on state-changing routes is a cheap
+// extra layer of defense against that on top of the loopback bind.
+const TRUSTED_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+
+function isTrustedHost(hostHeader) {
+  if (typeof hostHeader !== 'string') return false;
+  const hostname = hostHeader.split(':')[0].toLowerCase();
+  return TRUSTED_HOSTS.has(hostname);
+}
+
 function readBody(req, res) {
   return new Promise((resolve, reject) => {
-    let data = '';
+    const chunks = [];
+    let bytes = 0;
     let tooLarge = false;
     req.on('data', chunk => {
       if (tooLarge) return;
-      data += chunk;
-      if (data.length > 1e6) {
+      // chunk is a Buffer; .length is bytes. Accumulating into a '' string
+      // instead and checking .length there would count UTF-16 code units, not
+      // bytes — undercounting the real size of multibyte (e.g. UTF-8) input.
+      bytes += chunk.length;
+      if (bytes > MAX_BODY_BYTES) {
         tooLarge = true;
         res.writeHead(413, defaultHeaders('application/json', DYNAMIC_CACHE_CONTROL));
         res.end(JSON.stringify({ error: 'request body too large' }));
         req.destroy();
         reject(new Error('request body too large'));
+        return;
       }
+      chunks.push(chunk);
     });
-    req.on('end', () => resolve(data));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     req.on('error', reject);
   });
 }
@@ -695,6 +721,11 @@ function createRequestHandler(state) {
     }
 
     if (url === '/api/config' && req.method === 'POST') {
+      if (!isTrustedHost(req.headers.host)) {
+        res.writeHead(403, defaultHeaders('application/json', DYNAMIC_CACHE_CONTROL));
+        res.end(JSON.stringify({ error: 'untrusted Host header' }));
+        return;
+      }
       if (req.headers['content-type'] !== 'application/json') {
         res.writeHead(415, defaultHeaders('application/json', DYNAMIC_CACHE_CONTROL));
         res.end(JSON.stringify({ error: 'Content-Type must be application/json' }));
@@ -737,7 +768,12 @@ function createRequestHandler(state) {
     }
 
     if (url.startsWith('/docs/') && req.method === 'GET') {
-      const rel = url.slice('/docs/'.length).replace(/\.\./g, '');
+      // The real guard is the containment check below (abs stays under
+      // DOCS_DIR); `url` is already a normalized URL pathname (the WHATWG URL
+      // parser collapses ".." segments before this handler ever sees it), so
+      // stripping ".." here again would just risk mangling a legitimate
+      // filename without adding any actual protection.
+      const rel = url.slice('/docs/'.length);
       const abs = path.join(DOCS_DIR, rel);
       if (
         (abs === DOCS_DIR || abs.startsWith(DOCS_DIR + path.sep)) &&
@@ -756,7 +792,9 @@ function createRequestHandler(state) {
       res.end('Not found');
       return;
     }
-    const cacheControl = path.extname(filePath) === '.html' ? DYNAMIC_CACHE_CONTROL : STATIC_CACHE_CONTROL;
+    const cacheControl = path.extname(filePath) === '.html' ? DYNAMIC_CACHE_CONTROL
+      : (url === '/worker.js' || url === '/renderer-core.js') ? APP_ASSET_CACHE_CONTROL
+      : STATIC_CACHE_CONTROL;
     serveFile(res, filePath, cacheControl);
   };
 }
@@ -829,11 +867,12 @@ async function startApp(options = {}) {
     console.log('config.json reloaded');
   }
 
+  const CONFIG_DEBOUNCE_MS = 200;
   let cfgDebounce = null;
   const configWatcher = chokidar.watch(state.configPath, { ignoreInitial: true });
   configWatcher.on('all', () => {
     if (cfgDebounce) clearTimeout(cfgDebounce);
-    cfgDebounce = setTimeout(reloadConfigFromDisk, 200);
+    cfgDebounce = setTimeout(reloadConfigFromDisk, CONFIG_DEBOUNCE_MS);
   }).on('error', e => console.error('config watcher error:', e.message));
 
   let debounceTimer = null;
@@ -846,6 +885,7 @@ async function startApp(options = {}) {
     }, DEBOUNCE_MS);
   };
 
+  const AWAIT_WRITE_FINISH_MS = 300;
   const chokidarIgnores = [/(^|[/\\])\./, /\.(?!md$)[^.]+$/];
   if (state.cfg.ignorePaths && state.cfg.ignorePaths.length) {
     const prefix = path.resolve(state.cfg.vaultPath) + path.sep;
@@ -854,7 +894,7 @@ async function startApp(options = {}) {
   const watcher = chokidar.watch(state.cfg.vaultPath, {
     ignoreInitial: true,
     ignored: chokidarIgnores,
-    awaitWriteFinish: { stabilityThreshold: 300 }
+    awaitWriteFinish: { stabilityThreshold: AWAIT_WRITE_FINISH_MS }
   });
 
   watcher.on('all', (event, filePath) => {
@@ -881,19 +921,27 @@ async function startApp(options = {}) {
     process.exit(1);
   });
 
-  function shutdown() {
-    watcher.close();
-    configWatcher.close();
+  let shuttingDown = false;
+  async function shutdown() {
+    if (shuttingDown) return; // a second SIGINT/SIGTERM while already closing is a no-op
+    shuttingDown = true;
+    if (debounceTimer) clearTimeout(debounceTimer);
+    if (cfgDebounce) clearTimeout(cfgDebounce);
     for (const client of state.eventClients) {
       try { client.end(); } catch (_) {}
     }
+    try { await watcher.close(); } catch (_) {}
+    try { await configWatcher.close(); } catch (_) {}
     server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 2000);
+    // Fallback in case server.close()'s callback never fires (e.g. a lingering
+    // keep-alive connection). unref'd so this timer alone never keeps the
+    // process alive longer than everything else already would.
+    setTimeout(() => process.exit(0), 2000).unref();
   }
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  return { server, watcher, state, rebuild };
+  return { server, watcher, configWatcher, state, rebuild };
 }
 
 if (require.main === module) {
