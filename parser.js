@@ -919,5 +919,6 @@ module.exports = {
   scanVaultEntries,
   materializeGraph,
   applyFsEventToState,
-  rebuildGraphState
+  rebuildGraphState,
+  isIgnoredPath
 };

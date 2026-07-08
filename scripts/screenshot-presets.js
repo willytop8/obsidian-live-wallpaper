@@ -2,9 +2,8 @@
 // Screenshot each preset at a set of synthetic vault sizes using headless Chrome.
 //
 // Usage:
-//   node scripts/screenshot-presets.js audit      # old 8 presets (from settings.html) at 200/2000/35000
-//   node scripts/screenshot-presets.js new        # new presets.json at thumbnail size
-//   node scripts/screenshot-presets.js new-large  # new presets at 200/2000/10000 for record
+//   node scripts/screenshot-presets.js new        # presets.json at thumbnail size
+//   node scripts/screenshot-presets.js new-large  # presets.json at 200/2000/10000 for record
 //
 // Assumes the HTTP server is already running at 127.0.0.1:<port from config.json>.
 // Does NOT POST to /api/config (keeps the user's real cfg untouched); presets
@@ -69,15 +68,6 @@ function screenshot(url, outPath, { width = 1280, height = 720, delayMs = 3500 }
   });
 }
 
-// Read the 8 "old" presets by scraping settings.html PRESETS array.
-function readOldPresets() {
-  const settings = fs.readFileSync(path.join(ROOT, 'settings.html'), 'utf8');
-  const m = settings.match(/const PRESETS = (\[[\s\S]*?\n\]);/);
-  if (!m) throw new Error('PRESETS array not found in settings.html');
-  // eslint-disable-next-line no-eval
-  return eval(m[1]);
-}
-
 function readNewPresets() {
   return JSON.parse(fs.readFileSync(path.join(ROOT, 'presets.json'), 'utf8'));
 }
@@ -100,24 +90,10 @@ function delayForSize(size) {
 }
 
 async function main() {
-  const mode = process.argv[2] || 'audit';
+  const mode = process.argv[2] || 'new';
   await waitForServer();
 
-  if (mode === 'audit') {
-    const presets = readOldPresets();
-    const sizes = [200, 2000, 35000];
-    const outDir = path.join(ROOT, 'docs/audit');
-    fs.mkdirSync(outDir, { recursive: true });
-    for (const preset of presets) {
-      for (const size of sizes) {
-        const out = path.join(outDir, `${preset.name.toLowerCase()}-${size}.png`);
-        const url = buildUrl(size, preset.config);
-        process.stdout.write(`audit ${preset.name} ${size} → `);
-        try { await screenshot(url, out, { delayMs: delayForSize(size) }); console.log('ok'); }
-        catch (e) { console.log('FAIL', e.message); }
-      }
-    }
-  } else if (mode === 'new') {
+  if (mode === 'new') {
     const presets = readNewPresets();
     const outDir = path.join(ROOT, 'docs/presets');
     fs.mkdirSync(outDir, { recursive: true });
