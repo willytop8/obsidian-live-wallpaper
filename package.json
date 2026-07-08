@@ -26,19 +26,9 @@
     "macos-setup.md",
     "windows-setup.md",
     "vendor/",
-    "scripts/smoke.js",
-    "scripts/smoke-render.js",
     "scripts/find-chrome.js",
     "scripts/screenshot-presets.js",
-    "docs/presets/",
-    "docs/perf-roadmap.md",
-    "docs/theme-audit.md",
-    "docs/theme-axes.md",
-    "docs/finalization.md",
-    "docs/classic-preview.png",
-    "docs/settings-preview.png",
-    "docs/style-showcase.png",
-    "docs/wallpaper-preview.png"
+    "docs/presets/"
   ],
   "keywords": [
     "obsidian",
