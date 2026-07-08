@@ -19,11 +19,8 @@ renderer works offline (D3 is vendored locally).
 ## Reporting a vulnerability
 
 If you find a security issue, please report it privately rather than opening a
-public issue:
-
-- Use GitHub's **Report a vulnerability** (Security → Advisories) on the
-  repository, or
-- email the maintainer listed in `package.json`.
+public issue, using GitHub's **Report a vulnerability** (Security → Advisories)
+on the repository.
 
 Please include reproduction steps and the affected version. You can expect an
 acknowledgement within a few days.

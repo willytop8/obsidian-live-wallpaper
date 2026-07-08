@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0]
+## [1.0.0] - 2026-06-19
 
 First stable release.
 
@@ -22,6 +22,12 @@ First stable release.
   opaque gradient still overrides it for gradient presets.
 
 ### Added
+- **Foundational build-out.** Vault parser + file watcher, d3 force-graph
+  renderer on a fullscreen canvas, live updates over SSE, a settings page, and
+  the six-phase large-vault performance work (worker-based simulation, glow
+  sprite atlas, batched draws, static layer caching, viewport culling, adaptive
+  frame rate). This project has never had a separate pre-1.0 release — see
+  [`docs/theme-axes.md`](docs/theme-axes.md) for the preset design thinking.
 - **Color by folder.** New `nodeColorMode: 'folder'` colors nodes by their
   top-level vault folder via a deterministic palette (the parser now emits each
   node's folder). Edges inherit node color across tag/age/folder modes.
@@ -61,7 +67,7 @@ First stable release.
   Puppeteer caches).
 - Preset thumbnails for all 18 presets, so the settings preset picker shows a
   preview for every theme.
-- GitHub Actions CI running the test suite on Node 18, 20, and 22.
+- GitHub Actions CI running the test suite on Node 20 and 22.
 
 ### Changed
 - `drawEdges` groups edges with nested color→bucket maps instead of allocating a
@@ -71,11 +77,3 @@ First stable release.
 - Vault scan guards against symlink cycles via resolved-realpath tracking.
 - `scripts/screenshot-presets.js` finds Chrome cross-platform instead of
   assuming the macOS install path.
-
-## [0.1.0]
-
-Initial public preview: vault parser + file watcher, d3 force-graph renderer on a
-fullscreen canvas, live updates over SSE, settings page, preset system, and the
-six-phase large-vault performance work (worker-based simulation, glow sprite
-atlas, batched draws, static layer caching, viewport culling, adaptive frame
-rate). See `docs/perf-roadmap.md`, `docs/theme-audit.md`, and `docs/theme-axes.md`.

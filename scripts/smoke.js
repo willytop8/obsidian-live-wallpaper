@@ -451,6 +451,33 @@ async function run413BodyTooLarge(tmpRoot) {
   assert(/too large/.test(body.error), `expected a "too large" error message, got: ${body.error}`);
 }
 
+function runPresetsValidateAgainstSchema() {
+  // Regression: presets.json shipped two presets (Crystalline, Library) with
+  // motionMode: "still", a value the server's sanitizeConfigPatch rejected
+  // (MOTION_MODES didn't include it) even though it's exactly what the
+  // settings page POSTs when a user picks a preset — so clicking either
+  // preset threw a 400 and applied nothing. Validate every preset's config
+  // against the same sanitizer used by the live server so a shipped preset
+  // can never be broken like this again.
+  const presets = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'presets.json'), 'utf8'));
+  assert(presets.length > 0, 'expected presets.json to contain at least one preset');
+  for (const preset of presets) {
+    try {
+      sanitizeConfigPatch(preset.config);
+    } catch (e) {
+      throw new Error(`preset "${preset.name}" has an invalid config: ${e.message}`, { cause: e });
+    }
+  }
+}
+
+function runConfigExampleValidatesAgainstSchema(tmpRoot) {
+  // Regression: config.example.json is what every install guide tells users to
+  // `cp` into config.json — it must actually validate against the real schema.
+  const raw = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.example.json'), 'utf8'));
+  raw.vaultPath = tmpRoot; // the example's placeholder path doesn't exist on this machine
+  sanitizePersistedConfig(raw);
+}
+
 function runIgnorePathsUnit() {
   const vaultPath = '/vault';
   const patterns = ['.obsidian', 'templates'];
@@ -618,6 +645,8 @@ async function main() {
     runParserFuzz();
     runConfigValidationThrows();
     runIgnorePathsUnit();
+    runPresetsValidateAgainstSchema();
+    runConfigExampleValidatesAgainstSchema(tmpRoot);
     await runHappyPath(tmpRoot);
     await runDuplicateBasenames(tmpRoot);
     await runGhostNodes(tmpRoot);
