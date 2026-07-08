@@ -140,11 +140,12 @@ The renderer ships with a local vendored copy of D3, so the wallpaper still work
 | `nodeGlow` | `true` | Radial glow halo around each node |
 | `glowIntensity` | `1` | Glow halo strength (`0`–`1`); lower for flatter looks |
 | `edgeStyle` | `"line"` | Edge rendering: `line`, `curve`, or `none` |
-| `nodeColorMode` | `"tag"` | Node coloring: `tag` (by first tag) or `age` (by modified time) |
+| `nodeColorMode` | `"tag"` | Node coloring: `tag` (by first tag), `age` (by modified time), or `folder` (by top-level vault folder) |
+| `labelFont` | `"sans"` | Label typeface: `sans`, `mono`, or `serif` |
 | `particles` | `true` | Dots flowing along edges |
 | `particleSpeed` | `1` | Multiplier for particle travel speed |
 | `particleDensity` | `0.3` | Particle spawn density along links |
-| `motionMode` | `"balanced"` | Ambient movement profile: `light`, `balanced`, or `showcase` |
+| `motionMode` | `"balanced"` | Ambient movement profile: `still`, `light`, `balanced`, or `showcase` |
 | `clusterByTag` | `true` | Same-tag nodes gravitate together |
 | `clusterHalos` | `true` | Soft color fields behind major tag clusters |
 | `edgeColoring` | `true` | Edges inherit source node's tag color |
@@ -158,6 +159,11 @@ The renderer ships with a local vendored copy of D3, so the wallpaper still work
 | `maxRenderedNodes` | `5000` | Hard cap on rendered nodes (`100`–`100000`); lowest-importance nodes drop first |
 | `showUnresolvedLinks` | `true` | Show ghost nodes for `[[links]]` to notes that don't exist yet |
 | `tagColors` | `{}` | Map of Obsidian tag → hex color |
+| `ignorePaths` | `[]` | Vault-relative folder names to skip when scanning (e.g. `.obsidian`, `templates`) |
+| `fastHash` | `true` | Use the cheaper O(n) change-detection hash; set `false` to force the slower exact one if you ever suspect a missed redraw |
+| `autoTheme` | `false` | Swap to `lightAccent`/`lightBackground` and drop glow automatically when the OS is in light mode |
+| `lightAccent` | `#39407a` | Accent color used when `autoTheme` is on and the OS is in light mode |
+| `lightBackground` | `#ece6d6` | Background color used when `autoTheme` is on and the OS is in light mode |
 
 ### Tags vs links
 
@@ -173,10 +179,11 @@ If two markdown files share the same basename (e.g. `Index.md` in different fold
 
 ### Coloring modes
 
-Two ways to color nodes, set with `nodeColorMode`:
+Three ways to color nodes, set with `nodeColorMode`:
 
 - **`tag`** (default) — each note picks up the color of its first tag. Set tag colors in `tagColors`, or leave it empty and everything uses the accent. Same-tag nodes pull toward each other when `clusterByTag` is on.
 - **`age`** — fresh notes are green, stale ones fade to red. Good for seeing which parts of your vault you actually touch. Botanical uses this.
+- **`folder`** — nodes are colored by their top-level vault folder instead of tags. Notes at the vault root fall back to the accent color.
 
 ### Edge styles
 
@@ -184,7 +191,7 @@ Two ways to color nodes, set with `nodeColorMode`:
 
 ### Presets
 
-Ten one-click looks, each a meaningfully different scene rather than a palette swap:
+Eighteen one-click looks, each a meaningfully different scene rather than a palette swap:
 
 - **Plain** — minimal, still, mono accent
 - **Ambient** — the default polychrome drift with hubs
@@ -196,6 +203,14 @@ Ten one-click looks, each a meaningfully different scene rather than a palette s
 - **Constellation** — edges hidden, nodes float in clusters
 - **Topographic** — curved edges, map-like flow
 - **Contrast** — bold single-accent, stripped-down
+- **Synthwave** — retro cyberpunk pink/cyan glow on deep indigo, age-colored
+- **Mist** — silver-white on warm grey, ultra-faint edges, soft drift
+- **Crystalline** — ice-white halos on midnight, no edges, sharp glow
+- **Confetti** — party mode, randomized bright palette, dense particles
+- **Abyss** — deep-sea bioluminescence, teal on near-black, slow drift
+- **Ink** — sumi-e aesthetic, black nodes on off-white, no edges
+- **Library** — warm sepia parchment, age-colored, still composition
+- **Vapor** — vaporwave pastels on dark purple, curved flow, heavy glow
 
 Swap between them from the settings page. For the design thinking behind the lineup, see [`docs/theme-axes.md`](docs/theme-axes.md).
 

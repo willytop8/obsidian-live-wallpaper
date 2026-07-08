@@ -6,7 +6,9 @@
 2. Plash menu bar → **Add Website** → paste `http://127.0.0.1:3000`.
 3. **Browsing Mode**: off (so clicks pass through to your desktop).
 4. **Opacity**: 100%. **Invert colors**: off.
-5. **Reload interval**: leave blank — the renderer polls on its own.
+5. **Reload interval**: leave blank — the renderer updates itself live over a
+   server-sent-events stream as your vault changes, with `refreshMs` in
+   `config.json` only as a periodic fallback. No page reload needed.
 
 ## Autostart the parser
 
