@@ -112,6 +112,7 @@ async function main() {
     else log(`  ✓ reduced-motion: drew ${rmDrawn} nodes`);
   } finally {
     try { app.watcher.close(); } catch (_) {}
+    try { app.configWatcher.close(); } catch (_) {}
     try { app.server.close(); } catch (_) {}
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
   }

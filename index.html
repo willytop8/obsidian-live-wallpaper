@@ -1,5 +1,15 @@
 <!DOCTYPE html>
-<html><head><meta charset="utf-8"><style>
+<html><head><meta charset="utf-8">
+<!-- Defense in depth: everything here is same-origin already (server binds
+     127.0.0.1 only, D3 is vendored locally), so this mainly forecloses any
+     future accidental third-party script/image/connect src. script-src and
+     style-src need 'unsafe-inline' because the renderer's whole logic and its
+     dynamic styling live in inline <script>/style="" rather than external
+     files — this CSP does not stop inline-script-based XSS, only cross-origin
+     resource loading. (frame-ancestors isn't honored via <meta>; would need
+     an HTTP header to add clickjacking protection.) -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'">
+<style>
   html,body{margin:0;height:100%;overflow:hidden;}
   canvas{display:block;}
   .search-wrap{position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:10;display:none;width:360px;max-width:90vw}
@@ -1783,6 +1793,15 @@ applyBackground();
     return n.__color || cfg.accent || '#7c5cff';
   }
 
+  const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+  // Defense in depth: __color/accent are always server-validated hex today,
+  // but this is interpolated into a raw style="" attribute string rather than
+  // set via a DOM property, so anything unexpected reaching here (a future
+  // bug, not user input right now) can't break out of the attribute.
+  function safeColor(c) {
+    return HEX_COLOR_RE.test(c) ? c : '#7c5cff';
+  }
+
   function search(query) {
     if (!query || query.length < 2) { results.innerHTML = ''; focusIdx = -1; return; }
     const q = query.toLowerCase();
@@ -1796,7 +1815,7 @@ applyBackground();
     focusIdx = match.length ? 0 : -1;
     results.innerHTML = match.map((n, i) =>
       '<div class="search-result' + (i === 0 ? ' focus' : '') + '" data-idx="' + i + '">' +
-      '<span class="tag-dot" style="background:' + getNodeColor(n) + '"></span>' +
+      '<span class="tag-dot" style="background:' + safeColor(getNodeColor(n)) + '"></span>' +
       '<span class="label">' + esc(n.label || n.id) + '</span>' +
       (n.ghost ? '<span class="ghost-tag">unresolved</span>' : '') +
       '</div>'

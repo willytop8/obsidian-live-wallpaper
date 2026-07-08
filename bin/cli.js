@@ -17,7 +17,10 @@ const args = process.argv.slice(2);
 function flag(...names) {
   for (const n of names) {
     const i = args.indexOf(n);
-    if (i >= 0 && i + 1 < args.length) return args[i + 1];
+    // A following arg that itself looks like a flag (e.g. `--vault --port 3000`,
+    // or `--vault` as the last arg) means no value was actually given — treat
+    // it as missing rather than silently consuming the next flag as the value.
+    if (i >= 0 && i + 1 < args.length && !args[i + 1].startsWith('-')) return args[i + 1];
   }
   return null;
 }
