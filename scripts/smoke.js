@@ -105,7 +105,7 @@ async function runHappyPath(tmpRoot) {
     }
   });
 
-  const initial = buildGraph(vaultDir, outFile);
+  const initial = await buildGraph(vaultDir, outFile);
   assert(initial.nodes.length === 2, 'expected 2 nodes in initial graph');
   assert(initial.links.length === 2, 'expected 2 links in initial graph');
   assert(initial.discoveredTags.project === 1, 'expected discovered tag counts');
@@ -137,7 +137,7 @@ async function runHappyPath(tmpRoot) {
   assert(patch.hubLabels === true && patch.hubLabelCount === 7, 'expected config patch sanitization to work');
 
   writeFile(path.join(vaultDir, 'Gamma.md'), '# Gamma\n\n[[Alpha]]\n');
-  const rebuilt = buildGraph(vaultDir, outFile);
+  const rebuilt = await buildGraph(vaultDir, outFile);
   assert(rebuilt.nodes.length === 3, 'expected rebuild to include new note');
 }
 
@@ -150,7 +150,7 @@ async function runDuplicateBasenames(tmpRoot) {
   writeFile(path.join(vaultDir, 'Beta.md'), '# Beta root\n\n[[Alpha]]\n');
   writeFile(path.join(vaultDir, 'nested', 'Beta.md'), '# Beta nested\n\n[[Alpha]]\n');
 
-  const result = buildGraph(vaultDir, outFile);
+  const result = await buildGraph(vaultDir, outFile);
 
   // Should produce 3 nodes, not crash
   assert(result.nodes.length === 3, `expected 3 nodes, got ${result.nodes.length}`);
@@ -195,7 +195,7 @@ async function runGhostNodes(tmpRoot) {
   writeFile(path.join(vaultDir, 'Beta.md'), '# Beta\n\n[[Nonexistent]]\n');
 
   // With showUnresolvedLinks on
-  const withGhosts = buildGraph(vaultDir, outFile, { showUnresolvedLinks: true });
+  const withGhosts = await buildGraph(vaultDir, outFile, { showUnresolvedLinks: true });
   assert(withGhosts.nodes.length === 4, `expected 4 nodes (2 real + 2 ghost), got ${withGhosts.nodes.length}`);
   const ghosts = withGhosts.nodes.filter(n => n.ghost);
   assert(ghosts.length === 2, `expected 2 ghost nodes, got ${ghosts.length}`);
@@ -211,7 +211,7 @@ async function runGhostNodes(tmpRoot) {
   assert(toAlsoMissing.length === 1, `expected 1 link to Also Missing, got ${toAlsoMissing.length}`);
 
   // With showUnresolvedLinks off — no ghosts
-  const withoutGhosts = buildGraph(vaultDir, outFile, { showUnresolvedLinks: false });
+  const withoutGhosts = await buildGraph(vaultDir, outFile, { showUnresolvedLinks: false });
   assert(withoutGhosts.nodes.length === 2, `expected 2 nodes without ghosts, got ${withoutGhosts.nodes.length}`);
   assert(withoutGhosts.nodes.every(n => !n.ghost), 'expected no ghost nodes when disabled');
   // Only Alpha->Beta link (Beta has no real targets)
@@ -253,7 +253,7 @@ async function runConfigPatch(tmpRoot) {
 
   writeJson(configPath, cfg);
 
-  const entries = scanVaultEntries(vaultDir);
+  const entries = await scanVaultEntries(vaultDir);
   const state = {
     cfg,
     configPath,
@@ -327,7 +327,7 @@ async function runIncrementalWatcher(tmpRoot) {
   writeFile(path.join(vaultDir, 'Beta.md'), '# Beta\n\n');
 
   // Step 2: scan and materialize initial state
-  const entries = scanVaultEntries(vaultDir);
+  const entries = await scanVaultEntries(vaultDir);
   materializeGraph(entries, vaultDir, { showUnresolvedLinks: false });
 
   // Step 3: build minimal state object
@@ -343,11 +343,11 @@ async function runIncrementalWatcher(tmpRoot) {
   writeFile(gammaPath, '# Gamma\n\n[[Alpha]]\n');
 
   // Step 5: apply 'add' event
-  const addedGamma = applyFsEventToState(state, 'add', gammaPath);
+  const addedGamma = await applyFsEventToState(state, 'add', gammaPath);
   assert(addedGamma === true, `expected applyFsEventToState to return true for add, got ${addedGamma}`);
 
   // Step 6: rebuild — 3 nodes
-  const result3 = rebuildGraphState(state, { writeToDisk: false });
+  const result3 = await rebuildGraphState(state, { writeToDisk: false });
   assert(result3.nodes.length === 3, `expected 3 nodes after adding Gamma, got ${result3.nodes.length}`);
 
   // Step 7: delete Alpha.md from disk
@@ -355,11 +355,11 @@ async function runIncrementalWatcher(tmpRoot) {
   fs.unlinkSync(alphaPath);
 
   // Step 8: apply 'unlink' event
-  const unlinkedAlpha = applyFsEventToState(state, 'unlink', alphaPath);
+  const unlinkedAlpha = await applyFsEventToState(state, 'unlink', alphaPath);
   assert(unlinkedAlpha === true, `expected applyFsEventToState to return true for unlink, got ${unlinkedAlpha}`);
 
   // Step 9: rebuild — 2 nodes (Gamma + Beta)
-  const result2 = rebuildGraphState(state, { writeToDisk: false });
+  const result2 = await rebuildGraphState(state, { writeToDisk: false });
   assert(result2.nodes.length === 2, `expected 2 nodes after removing Alpha, got ${result2.nodes.length}`);
 
   // Step 10: unlinkDir — add a subdirectory note, confirm it appears, then remove the dir
@@ -367,17 +367,24 @@ async function runIncrementalWatcher(tmpRoot) {
   const deltaPath = path.join(subdirPath, 'Delta.md');
   writeFile(deltaPath, '# Delta\n\n');
 
-  const addedDelta = applyFsEventToState(state, 'add', deltaPath);
+  const addedDelta = await applyFsEventToState(state, 'add', deltaPath);
   assert(addedDelta === true, `expected applyFsEventToState to return true for adding Delta, got ${addedDelta}`);
 
-  const result3b = rebuildGraphState(state, { writeToDisk: false });
+  const result3b = await rebuildGraphState(state, { writeToDisk: false });
   assert(result3b.nodes.length === 3, `expected 3 nodes after adding Delta, got ${result3b.nodes.length}`);
 
   fs.rmSync(subdirPath, { recursive: true });
 
-  const removedDir = applyFsEventToState(state, 'unlinkDir', subdirPath);
+  const removedDir = await applyFsEventToState(state, 'unlinkDir', subdirPath);
   assert(removedDir === true, `expected applyFsEventToState to return true for unlinkDir, got ${removedDir}`);
   assert(!state.entries.has(deltaPath), 'expected Delta to be removed from entries after unlinkDir');
+
+  // Regression: a sibling directory that merely shares vaultDir's string prefix
+  // (e.g. vaultDir "watcher-vault" vs "watcher-vault-sibling") must not be
+  // treated as inside the vault by a naive startsWith(vaultPath) check.
+  const siblingPath = path.join(vaultDir + '-sibling', 'Evil.md');
+  const siblingResult = await applyFsEventToState(state, 'add', siblingPath);
+  assert(siblingResult === false, 'expected sibling-directory path to be rejected as outside the vault');
 }
 
 function runRendererCore() {
@@ -402,6 +409,17 @@ function runRendererCore() {
   // Object-form links (source/target resolved to node refs) hash the same as string-form.
   const g1obj = { nodes: g1.nodes, links: [{ source: { id: 'a' }, target: { id: 'b' } }] };
   assert(core.graphHashFast(g1obj) === core.graphHashFast(g1), 'graphHashFast handles object link refs');
+
+  // Regression: graphHashFast used to sample only the first/last 16 node ids,
+  // so renaming a link-less node in the middle of a larger graph produced an
+  // identical hash and the renderer never redrew. 40 nodes puts index 20
+  // squarely outside that old sampling window on both ends.
+  const bigNodesA = Array.from({ length: 40 }, (_, i) => ({ id: `n${i}` }));
+  const bigNodesB = bigNodesA.map((n, i) => (i === 20 ? { id: 'renamed' } : n));
+  const gBigA = { nodes: bigNodesA, links: [] };
+  const gBigB = { nodes: bigNodesB, links: [] };
+  assert(core.graphHashFast(gBigA) !== core.graphHashFast(gBigB),
+    'graphHashFast must detect a rename of a middle node in a large graph');
 }
 
 function runConfigValidationThrows() {

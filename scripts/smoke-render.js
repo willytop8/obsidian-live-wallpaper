@@ -87,7 +87,7 @@ async function main() {
   const configPath = path.join(dir, 'config.json');
   fs.writeFileSync(configPath, JSON.stringify({ vaultPath: vault, port: PORT }));
 
-  const app = startApp({ configPath, outPath: path.join(dir, 'graph.json') });
+  const app = await startApp({ configPath, outPath: path.join(dir, 'graph.json') });
   let failures = 0;
   try {
     await waitForServer(PORT);
