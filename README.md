@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/willytop8/obsidian-live-wallpaper/actions/workflows/ci.yml/badge.svg)](https://github.com/willytop8/obsidian-live-wallpaper/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%E2%89%A518-43853d.svg)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-%E2%89%A520-43853d.svg)](https://nodejs.org)
 
 > Turn your Obsidian vault into an ambient desktop scene instead of another hidden sidebar.
 
@@ -54,7 +54,7 @@ settings page — or use it as a starting point and tweak.
 
 ## Install
 
-You'll need [Node.js](https://nodejs.org) (v18+) and a wallpaper host app:
+You'll need [Node.js](https://nodejs.org) (v20+) and a wallpaper host app:
 
 - **macOS**: [Plash](https://apps.apple.com/us/app/plash/id1494023538) (free, Mac App Store)
 - **Windows**: [Lively Wallpaper](https://www.rocksdanister.com/lively/) (free, open source)
