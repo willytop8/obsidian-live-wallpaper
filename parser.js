@@ -82,7 +82,10 @@ function failConfig(message) {
 
 function requireString(value, key) {
   if (typeof value !== 'string' || value.trim() === '') {
-    failConfig(`${key} is required and must be a non-empty string`);
+    // Throw (not failConfig/process.exit) so callers control fatality: readConfigFile's
+    // catch exits at startup, but reloadConfigFromDisk's catch must be able to just log
+    // and ignore a bad live edit instead of killing the running server.
+    throw new Error(`${key} is required and must be a non-empty string`);
   }
   return value;
 }
