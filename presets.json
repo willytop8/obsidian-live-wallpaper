@@ -28,7 +28,27 @@
       "noteFlare": false,
       "autoScaleLargeVaults": true,
       "maxRenderedNodes": 6000,
-      "tagColors": {}
+      "tagColors": {},
+      "glowBreathing": false,
+      "glowBreathingSpeed": 1.0,
+      "glowBreathingDepth": 0.15,
+      "ambientParticles": false,
+      "ambientParticleCount": 0,
+      "ambientParticleSpeed": 0.3,
+      "ambientParticleSize": 1.5,
+      "chromaticBloom": false,
+      "chromaticBloomIntensity": 0,
+      "depthParallax": false,
+      "depthParallaxStrength": 0,
+      "depthParallaxLayers": 3,
+      "theme": "default",
+      "labelStyle": {
+        "mode": "badge",
+        "backgroundAlpha": 0.72,
+        "glowColor": "accent",
+        "chromaticSplit": false,
+        "fontStyle": "sans"
+      }
     }
   },
   {
@@ -60,7 +80,27 @@
       "noteFlare": true,
       "autoScaleLargeVaults": true,
       "maxRenderedNodes": 5000,
-      "tagColors": {}
+      "tagColors": {},
+      "glowBreathing": true,
+      "glowBreathingSpeed": 1.0,
+      "glowBreathingDepth": 0.15,
+      "ambientParticles": true,
+      "ambientParticleCount": 80,
+      "ambientParticleSpeed": 0.3,
+      "ambientParticleSize": 1.5,
+      "chromaticBloom": false,
+      "chromaticBloomIntensity": 0,
+      "depthParallax": true,
+      "depthParallaxStrength": 0.4,
+      "depthParallaxLayers": 3,
+      "theme": "default",
+      "labelStyle": {
+        "mode": "glow",
+        "backgroundAlpha": 0,
+        "glowColor": "accent",
+        "chromaticSplit": false,
+        "fontStyle": "sans"
+      }
     }
   },
   {
@@ -92,7 +132,27 @@
       "noteFlare": true,
       "autoScaleLargeVaults": true,
       "maxRenderedNodes": 5000,
-      "tagColors": {}
+      "tagColors": {},
+      "glowBreathing": true,
+      "glowBreathingSpeed": 1.0,
+      "glowBreathingDepth": 0.2,
+      "ambientParticles": true,
+      "ambientParticleCount": 60,
+      "ambientParticleSpeed": 0.35,
+      "ambientParticleSize": 1.5,
+      "chromaticBloom": true,
+      "chromaticBloomIntensity": 0.5,
+      "depthParallax": true,
+      "depthParallaxStrength": 0.3,
+      "depthParallaxLayers": 3,
+      "theme": "default",
+      "labelStyle": {
+        "mode": "glow",
+        "backgroundAlpha": 0,
+        "glowColor": "node",
+        "chromaticSplit": false,
+        "fontStyle": "sans"
+      }
     }
   },
   {
@@ -124,7 +184,27 @@
       "noteFlare": false,
       "autoScaleLargeVaults": true,
       "maxRenderedNodes": 6000,
-      "tagColors": {}
+      "tagColors": {},
+      "glowBreathing": false,
+      "glowBreathingSpeed": 1.0,
+      "glowBreathingDepth": 0.15,
+      "ambientParticles": false,
+      "ambientParticleCount": 0,
+      "ambientParticleSpeed": 0.3,
+      "ambientParticleSize": 1.5,
+      "chromaticBloom": false,
+      "chromaticBloomIntensity": 0,
+      "depthParallax": false,
+      "depthParallaxStrength": 0,
+      "depthParallaxLayers": 3,
+      "theme": "default",
+      "labelStyle": {
+        "mode": "badge",
+        "backgroundAlpha": 0.65,
+        "glowColor": "accent",
+        "chromaticSplit": false,
+        "fontStyle": "sans"
+      }
     }
   },
   {
@@ -157,7 +237,27 @@
       "noteFlare": false,
       "autoScaleLargeVaults": true,
       "maxRenderedNodes": 5000,
-      "tagColors": {}
+      "tagColors": {},
+      "glowBreathing": false,
+      "glowBreathingSpeed": 1.0,
+      "glowBreathingDepth": 0.15,
+      "ambientParticles": false,
+      "ambientParticleCount": 0,
+      "ambientParticleSpeed": 0.3,
+      "ambientParticleSize": 1.5,
+      "chromaticBloom": false,
+      "chromaticBloomIntensity": 0,
+      "depthParallax": false,
+      "depthParallaxStrength": 0,
+      "depthParallaxLayers": 3,
+      "theme": "default",
+      "labelStyle": {
+        "mode": "badge",
+        "backgroundAlpha": 0.72,
+        "glowColor": "accent",
+        "chromaticSplit": false,
+        "fontStyle": "mono"
+      }
     }
   },
   {
@@ -190,12 +290,32 @@
       "noteFlare": false,
       "autoScaleLargeVaults": true,
       "maxRenderedNodes": 5000,
-      "tagColors": {}
+      "tagColors": {},
+      "glowBreathing": false,
+      "glowBreathingSpeed": 1.0,
+      "glowBreathingDepth": 0.15,
+      "ambientParticles": true,
+      "ambientParticleCount": 40,
+      "ambientParticleSpeed": 0.2,
+      "ambientParticleSize": 1.2,
+      "chromaticBloom": false,
+      "chromaticBloomIntensity": 0,
+      "depthParallax": false,
+      "depthParallaxStrength": 0,
+      "depthParallaxLayers": 3,
+      "theme": "default",
+      "labelStyle": {
+        "mode": "minimal",
+        "backgroundAlpha": 0,
+        "glowColor": "accent",
+        "chromaticSplit": false,
+        "fontStyle": "serif"
+      }
     }
   },
   {
     "name": "Botanical",
-    "description": "Spectrum palette — fresh notes green, stale notes red.",
+    "description": "Spectrum palette \u2014 fresh notes green, stale notes red.",
     "accent": "#78d97c",
     "background": "#0a120c",
     "thumbnail": "/docs/presets/botanical.png",
@@ -222,7 +342,27 @@
       "noteFlare": true,
       "autoScaleLargeVaults": true,
       "maxRenderedNodes": 5000,
-      "tagColors": {}
+      "tagColors": {},
+      "glowBreathing": true,
+      "glowBreathingSpeed": 0.8,
+      "glowBreathingDepth": 0.12,
+      "ambientParticles": true,
+      "ambientParticleCount": 70,
+      "ambientParticleSpeed": 0.25,
+      "ambientParticleSize": 1.5,
+      "chromaticBloom": false,
+      "chromaticBloomIntensity": 0,
+      "depthParallax": true,
+      "depthParallaxStrength": 0.3,
+      "depthParallaxLayers": 3,
+      "theme": "default",
+      "labelStyle": {
+        "mode": "glow",
+        "backgroundAlpha": 0,
+        "glowColor": "node",
+        "chromaticSplit": false,
+        "fontStyle": "sans"
+      }
     }
   },
   {
@@ -254,7 +394,27 @@
       "noteFlare": true,
       "autoScaleLargeVaults": true,
       "maxRenderedNodes": 5000,
-      "tagColors": {}
+      "tagColors": {},
+      "glowBreathing": true,
+      "glowBreathingSpeed": 0.7,
+      "glowBreathingDepth": 0.18,
+      "ambientParticles": true,
+      "ambientParticleCount": 90,
+      "ambientParticleSpeed": 0.2,
+      "ambientParticleSize": 1.2,
+      "chromaticBloom": false,
+      "chromaticBloomIntensity": 0,
+      "depthParallax": true,
+      "depthParallaxStrength": 0.8,
+      "depthParallaxLayers": 4,
+      "theme": "default",
+      "labelStyle": {
+        "mode": "glow",
+        "backgroundAlpha": 0,
+        "glowColor": "node",
+        "chromaticSplit": false,
+        "fontStyle": "sans"
+      }
     }
   },
   {
@@ -286,7 +446,27 @@
       "noteFlare": false,
       "autoScaleLargeVaults": true,
       "maxRenderedNodes": 5000,
-      "tagColors": {}
+      "tagColors": {},
+      "glowBreathing": false,
+      "glowBreathingSpeed": 1.0,
+      "glowBreathingDepth": 0.15,
+      "ambientParticles": true,
+      "ambientParticleCount": 50,
+      "ambientParticleSpeed": 0.2,
+      "ambientParticleSize": 1.3,
+      "chromaticBloom": false,
+      "chromaticBloomIntensity": 0,
+      "depthParallax": true,
+      "depthParallaxStrength": 0.35,
+      "depthParallaxLayers": 2,
+      "theme": "default",
+      "labelStyle": {
+        "mode": "badge",
+        "backgroundAlpha": 0.6,
+        "glowColor": "accent",
+        "chromaticSplit": false,
+        "fontStyle": "sans"
+      }
     }
   },
   {
@@ -318,7 +498,27 @@
       "noteFlare": false,
       "autoScaleLargeVaults": true,
       "maxRenderedNodes": 5000,
-      "tagColors": {}
+      "tagColors": {},
+      "glowBreathing": false,
+      "glowBreathingSpeed": 1.0,
+      "glowBreathingDepth": 0.15,
+      "ambientParticles": false,
+      "ambientParticleCount": 0,
+      "ambientParticleSpeed": 0.3,
+      "ambientParticleSize": 1.5,
+      "chromaticBloom": false,
+      "chromaticBloomIntensity": 0,
+      "depthParallax": false,
+      "depthParallaxStrength": 0,
+      "depthParallaxLayers": 3,
+      "theme": "default",
+      "labelStyle": {
+        "mode": "badge",
+        "backgroundAlpha": 0.8,
+        "glowColor": "accent",
+        "chromaticSplit": false,
+        "fontStyle": "sans"
+      }
     }
   },
   {
@@ -350,7 +550,27 @@
       "noteFlare": false,
       "autoScaleLargeVaults": true,
       "maxRenderedNodes": 5000,
-      "tagColors": {}
+      "tagColors": {},
+      "glowBreathing": true,
+      "glowBreathingSpeed": 1.5,
+      "glowBreathingDepth": 0.3,
+      "ambientParticles": true,
+      "ambientParticleCount": 90,
+      "ambientParticleSpeed": 0.5,
+      "ambientParticleSize": 1.8,
+      "chromaticBloom": true,
+      "chromaticBloomIntensity": 0.7,
+      "depthParallax": true,
+      "depthParallaxStrength": 0.3,
+      "depthParallaxLayers": 3,
+      "theme": "default",
+      "labelStyle": {
+        "mode": "glow",
+        "backgroundAlpha": 0,
+        "glowColor": "accent",
+        "chromaticSplit": true,
+        "fontStyle": "sans"
+      }
     }
   },
   {
@@ -382,7 +602,27 @@
       "noteFlare": false,
       "autoScaleLargeVaults": true,
       "maxRenderedNodes": 5000,
-      "tagColors": {}
+      "tagColors": {},
+      "glowBreathing": true,
+      "glowBreathingSpeed": 0.6,
+      "glowBreathingDepth": 0.08,
+      "ambientParticles": true,
+      "ambientParticleCount": 120,
+      "ambientParticleSpeed": 0.15,
+      "ambientParticleSize": 1.0,
+      "chromaticBloom": false,
+      "chromaticBloomIntensity": 0,
+      "depthParallax": true,
+      "depthParallaxStrength": 0.5,
+      "depthParallaxLayers": 3,
+      "theme": "default",
+      "labelStyle": {
+        "mode": "minimal",
+        "backgroundAlpha": 0,
+        "glowColor": "accent",
+        "chromaticSplit": false,
+        "fontStyle": "sans"
+      }
     }
   },
   {
@@ -414,7 +654,27 @@
       "noteFlare": false,
       "autoScaleLargeVaults": true,
       "maxRenderedNodes": 5000,
-      "tagColors": {}
+      "tagColors": {},
+      "glowBreathing": true,
+      "glowBreathingSpeed": 0.7,
+      "glowBreathingDepth": 0.25,
+      "ambientParticles": true,
+      "ambientParticleCount": 50,
+      "ambientParticleSpeed": 0.15,
+      "ambientParticleSize": 1.5,
+      "chromaticBloom": true,
+      "chromaticBloomIntensity": 0.3,
+      "depthParallax": true,
+      "depthParallaxStrength": 0.7,
+      "depthParallaxLayers": 3,
+      "theme": "default",
+      "labelStyle": {
+        "mode": "glow",
+        "backgroundAlpha": 0,
+        "glowColor": "node",
+        "chromaticSplit": false,
+        "fontStyle": "sans"
+      }
     }
   },
   {
@@ -446,7 +706,27 @@
       "noteFlare": false,
       "autoScaleLargeVaults": true,
       "maxRenderedNodes": 5000,
-      "tagColors": {}
+      "tagColors": {},
+      "glowBreathing": true,
+      "glowBreathingSpeed": 1.4,
+      "glowBreathingDepth": 0.2,
+      "ambientParticles": true,
+      "ambientParticleCount": 120,
+      "ambientParticleSpeed": 0.45,
+      "ambientParticleSize": 1.8,
+      "chromaticBloom": false,
+      "chromaticBloomIntensity": 0,
+      "depthParallax": true,
+      "depthParallaxStrength": 0.25,
+      "depthParallaxLayers": 3,
+      "theme": "default",
+      "labelStyle": {
+        "mode": "glow",
+        "backgroundAlpha": 0,
+        "glowColor": "node",
+        "chromaticSplit": false,
+        "fontStyle": "sans"
+      }
     }
   },
   {
@@ -478,7 +758,27 @@
       "noteFlare": false,
       "autoScaleLargeVaults": true,
       "maxRenderedNodes": 5000,
-      "tagColors": {}
+      "tagColors": {},
+      "glowBreathing": true,
+      "glowBreathingSpeed": 0.6,
+      "glowBreathingDepth": 0.22,
+      "ambientParticles": true,
+      "ambientParticleCount": 100,
+      "ambientParticleSpeed": 0.15,
+      "ambientParticleSize": 1.3,
+      "chromaticBloom": true,
+      "chromaticBloomIntensity": 0.4,
+      "depthParallax": true,
+      "depthParallaxStrength": 0.6,
+      "depthParallaxLayers": 3,
+      "theme": "default",
+      "labelStyle": {
+        "mode": "glow",
+        "backgroundAlpha": 0,
+        "glowColor": "node",
+        "chromaticSplit": false,
+        "fontStyle": "sans"
+      }
     }
   },
   {
@@ -511,7 +811,27 @@
       "noteFlare": false,
       "autoScaleLargeVaults": true,
       "maxRenderedNodes": 5000,
-      "tagColors": {}
+      "tagColors": {},
+      "glowBreathing": false,
+      "glowBreathingSpeed": 1.0,
+      "glowBreathingDepth": 0.15,
+      "ambientParticles": true,
+      "ambientParticleCount": 30,
+      "ambientParticleSpeed": 0.15,
+      "ambientParticleSize": 1.0,
+      "chromaticBloom": false,
+      "chromaticBloomIntensity": 0,
+      "depthParallax": false,
+      "depthParallaxStrength": 0,
+      "depthParallaxLayers": 3,
+      "theme": "default",
+      "labelStyle": {
+        "mode": "minimal",
+        "backgroundAlpha": 0,
+        "glowColor": "accent",
+        "chromaticSplit": false,
+        "fontStyle": "serif"
+      }
     }
   },
   {
@@ -544,7 +864,27 @@
       "noteFlare": false,
       "autoScaleLargeVaults": true,
       "maxRenderedNodes": 5000,
-      "tagColors": {}
+      "tagColors": {},
+      "glowBreathing": false,
+      "glowBreathingSpeed": 1.0,
+      "glowBreathingDepth": 0.15,
+      "ambientParticles": true,
+      "ambientParticleCount": 25,
+      "ambientParticleSpeed": 0.1,
+      "ambientParticleSize": 0.8,
+      "chromaticBloom": false,
+      "chromaticBloomIntensity": 0,
+      "depthParallax": false,
+      "depthParallaxStrength": 0,
+      "depthParallaxLayers": 3,
+      "theme": "default",
+      "labelStyle": {
+        "mode": "minimal",
+        "backgroundAlpha": 0,
+        "glowColor": "accent",
+        "chromaticSplit": false,
+        "fontStyle": "serif"
+      }
     }
   },
   {
@@ -576,7 +916,27 @@
       "noteFlare": false,
       "autoScaleLargeVaults": true,
       "maxRenderedNodes": 5000,
-      "tagColors": {}
+      "tagColors": {},
+      "glowBreathing": true,
+      "glowBreathingSpeed": 1.5,
+      "glowBreathingDepth": 0.28,
+      "ambientParticles": true,
+      "ambientParticleCount": 100,
+      "ambientParticleSpeed": 0.5,
+      "ambientParticleSize": 1.8,
+      "chromaticBloom": true,
+      "chromaticBloomIntensity": 0.6,
+      "depthParallax": true,
+      "depthParallaxStrength": 0.5,
+      "depthParallaxLayers": 3,
+      "theme": "default",
+      "labelStyle": {
+        "mode": "glow",
+        "backgroundAlpha": 0,
+        "glowColor": "node",
+        "chromaticSplit": true,
+        "fontStyle": "sans"
+      }
     }
   }
 ]

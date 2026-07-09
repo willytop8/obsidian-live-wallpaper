@@ -14,6 +14,29 @@ Obsidian Live Wallpaper turns your vault graph into a live desktop backdrop: glo
 
 **macOS, Windows, and Linux.**
 
+## ✨ What's New in v1.1
+
+Five new visual enhancements and four alternate rendering themes — all opt-in via config.
+
+![Theme showcase](docs/theme-showcase-v2.png)
+
+*Left to right, top to bottom: Ambient, Neon, Constellation, Synthwave, Abyss, Ink Wash, Sketch, Celestial, Stained Glass*
+
+**New rendering effects:**
+- **Glow breathing** — nodes slowly pulse over ~30s cycles, keeping the wallpaper alive during long desktop sessions
+- **Ambient particles** — free-floating motes drift independently of the graph, adding atmospheric depth
+- **Chromatic bloom** — bright nodes bloom into hue-shifted halos for a cinematic, photographic feel
+- **Depth parallax** — nodes rendered in 2–4 depth layers with independent motion, saturation, and blur
+- **Label modes** — per-preset label styling: badge, glow, minimal, and chromatic-split (pink/cyan for Synthwave/Vapor)
+
+**Four new rendering themes** (set `"theme"` in config):
+- **Celestial** — stars with diffraction spikes, orbital rings, and a slowly rotating starfield
+- **Ink Wash** — watercolor pigment bleed, brush-stroke edges, and paper texture
+- **Sketchbook** — hand-drawn jittered lines, notebook paper with ruled lines, graphite smudges
+- **Stained Glass** — *(experimental)* Voronoi-tessellated cells, colored by tag, with dark lead borders
+
+All new features are O(n) with zero performance regression. [`docs/themes/`](docs/themes/) has standalone screenshots of each theme.
+
 ## Why
 
 The Obsidian graph view is beautiful and almost nobody looks at it, because it's buried two clicks deep inside the app. This project moves it to the one screen you actually stare at all day.
@@ -164,6 +187,20 @@ The renderer ships with a local vendored copy of D3, so the wallpaper still work
 | `autoTheme` | `false` | Swap to `lightAccent`/`lightBackground` and drop glow automatically when the OS is in light mode |
 | `lightAccent` | `#39407a` | Accent color used when `autoTheme` is on and the OS is in light mode |
 | `lightBackground` | `#ece6d6` | Background color used when `autoTheme` is on and the OS is in light mode |
+| `glowBreathing` | `true` | Nodes slowly pulse over ~30s cycles |
+| `glowBreathingSpeed` | `1` | Breathing cycle speed multiplier (`0.1`–`3`) |
+| `glowBreathingDepth` | `0.15` | Maximum glow radius swell (`0`–`0.4`) |
+| `ambientParticles` | `true` | Free-floating atmospheric particles independent of the graph |
+| `ambientParticleCount` | `80` | Number of ambient particles (`0`–`300`) |
+| `ambientParticleSpeed` | `0.3` | Ambient particle drift speed (`0.05`–`2`) |
+| `ambientParticleSize` | `1.5` | Ambient particle base radius in px (`0.5`–`4`) |
+| `chromaticBloom` | `true` | Bright nodes bloom into hue-shifted outer halos |
+| `chromaticBloomIntensity` | `0.4` | Bloom strength (`0`–`1`) |
+| `depthParallax` | `true` | Render nodes in depth layers with independent motion |
+| `depthParallaxStrength` | `0.5` | Layer separation intensity (`0`–`1`) |
+| `depthParallaxLayers` | `3` | Number of depth layers (`2`–`4`) |
+| `theme` | `\"default\"` | Rendering engine: `default`, `celestial`, `sketch`, `wash`, or `stained-glass` |
+| `labelStyle` | *(see presets)* | Per-preset label styling object with `mode`, `glowColor`, `chromaticSplit`, `fontStyle` |
 
 ### Tags vs links
 

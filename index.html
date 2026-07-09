@@ -31,6 +31,11 @@
 </div>
 <script src="/vendor/d3.min.js"></script>
 <script src="/renderer-core.js"></script>
+<script src="/themes/registry.js"></script>
+<script src="/themes/celestial.js"></script>
+<script src="/themes/wash.js"></script>
+<script src="/themes/sketch.js"></script>
+<script src="/themes/stained-glass.js"></script>
 <script>
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
@@ -69,7 +74,20 @@ const DEFAULTS = {
   labelFont: 'sans',
   autoTheme: false,
   lightAccent: '#39407a',
-  lightBackground: '#ece6d6'
+  lightBackground: '#ece6d6',
+  glowBreathing: true,
+  glowBreathingSpeed: 1,
+  glowBreathingDepth: 0.15,
+  ambientParticles: true,
+  ambientParticleCount: 80,
+  ambientParticleSpeed: 0.3,
+  ambientParticleSize: 1.5,
+  chromaticBloom: true,
+  chromaticBloomIntensity: 0.4,
+  depthParallax: true,
+  depthParallaxStrength: 0.5,
+  depthParallaxLayers: 3,
+  theme: 'default'
 };
 
 const EDGE_STYLES = new Set(['line', 'curve', 'none']);
@@ -80,7 +98,10 @@ const FONT_STACKS = {
   mono: "ui-monospace, SFMono-Regular, Menlo, 'Cascadia Code', monospace",
   serif: "Georgia, 'Iowan Old Style', 'Times New Roman', serif"
 };
-function labelFontStack() { return FONT_STACKS[cfg.labelFont] || FONT_STACKS.sans; }
+function labelFontStack() {
+  const font = (cfg.labelStyle && cfg.labelStyle.fontStyle) || cfg.labelFont || 'sans';
+  return FONT_STACKS[font] || FONT_STACKS.sans;
+}
 // Deterministic per-folder color for nodeColorMode 'folder'.
 const FOLDER_COLOR_CACHE = new Map();
 function folderColor(folder) {
@@ -350,6 +371,7 @@ function normalizeConfig(data) {
   next.edgeStyle = EDGE_STYLES.has(next.edgeStyle) ? next.edgeStyle : DEFAULTS.edgeStyle;
   next.nodeColorMode = NODE_COLOR_MODES.has(next.nodeColorMode) ? next.nodeColorMode : DEFAULTS.nodeColorMode;
   next.labelFont = LABEL_FONTS.has(next.labelFont) ? next.labelFont : DEFAULTS.labelFont;
+  next.labelStyle = isPlainObject(next.labelStyle) ? next.labelStyle : {};
   next.autoTheme = next.autoTheme === true;
   return next;
 }
@@ -663,43 +685,86 @@ function resize() {
 resize();
 addEventListener('resize', () => { resize(); invalidateStaticLayer(); markConfigChanged(); });
 
+let GLOW_SPRITE_CACHE = new Map();
+const GLOW_SPRITE_CACHE_MAX = 60;
+let GLOW_SPRITE_CACHE_ORDER = [];
 const GLOW_SPRITE_SIZE = 128;
-let glowSpriteBase = null;
-const GLOW_SPRITE_CACHE_MAX = 64;
-const glowSpriteCache = new Map();
-const glowSpriteCacheOrder = [];
 
-function buildGlowSpriteBase() {
-  const c = document.createElement('canvas');
-  c.width = c.height = GLOW_SPRITE_SIZE;
-  const g = c.getContext('2d');
-  const half = GLOW_SPRITE_SIZE / 2;
-  const grad = g.createRadialGradient(half, half, 0, half, half, half);
-  grad.addColorStop(0, 'rgba(255,255,255,1)');
-  grad.addColorStop(0.5, 'rgba(255,255,255,0.32)');
-  grad.addColorStop(1, 'rgba(255,255,255,0)');
-  g.fillStyle = grad;
-  g.fillRect(0, 0, GLOW_SPRITE_SIZE, GLOW_SPRITE_SIZE);
-  return c;
+// Helper to shift hue for chromatic bloom
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, s, l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+      case g: h = ((b - r) / d + 2) / 6; break;
+      case b: h = ((r - g) / d + 4) / 6; break;
+    }
+  }
+  s = s || 0;
+  return [Math.round(h * 360), Math.round(s * 100), Math.round(l * 100)];
+}
+function hueShift(hex, shift) {
+  const [r, g, b] = hexToRGB(hex);
+  const hsl = rgbToHsl(r, g, b);
+  hsl[0] = (hsl[0] + shift) % 360;
+  return hslToHex(hsl[0], hsl[1], hsl[2]);
 }
 
-function getGlowSprite(hex) {
-  let sprite = glowSpriteCache.get(hex);
+function getGlowSprite(hex, size, chromatic, chromaticIntensity) {
+  if (size === undefined) size = GLOW_SPRITE_SIZE;
+  if (chromatic === undefined) chromatic = false;
+  if (chromaticIntensity === undefined) chromaticIntensity = 0;
+  const key = chromatic ? `${hex}-${size}-${chromaticIntensity.toFixed(1)}` : `${hex}-${size}`;
+  let sprite = GLOW_SPRITE_CACHE.get(key);
   if (sprite) return sprite;
-  if (!glowSpriteBase) glowSpriteBase = buildGlowSpriteBase();
+
   sprite = document.createElement('canvas');
-  sprite.width = sprite.height = GLOW_SPRITE_SIZE;
+  sprite.width = sprite.height = size;
   const g = sprite.getContext('2d');
-  g.drawImage(glowSpriteBase, 0, 0);
-  g.globalCompositeOperation = 'source-in';
-  g.fillStyle = hex;
-  g.fillRect(0, 0, GLOW_SPRITE_SIZE, GLOW_SPRITE_SIZE);
-  while (glowSpriteCache.size >= GLOW_SPRITE_CACHE_MAX) {
-    const evict = glowSpriteCacheOrder.shift();
-    if (evict) glowSpriteCache.delete(evict);
+
+  const half = size / 2;
+  const baseRadius = half * 0.9;
+
+  // Base glow (always present)
+  let grad = g.createRadialGradient(half, half, 0, half, half, baseRadius);
+  grad.addColorStop(0, rgba(...hexToRGB(hex), 1));
+  grad.addColorStop(0.6, rgba(...hexToRGB(hex), 0.5));
+  grad.addColorStop(1, rgba(...hexToRGB(hex), 0));
+  g.fillStyle = grad;
+  g.fillRect(0, 0, size, size);
+
+  // Chromatic bloom layer
+  if (chromatic && chromaticIntensity > 0) {
+    g.globalCompositeOperation = 'lighter';
+    const bloomRadius = half * (1 + chromaticIntensity * 0.5);
+    const bloomShift1 = hueShift(hex, 30);
+    const bloomShift2 = hueShift(hex, -30);
+
+    grad = g.createRadialGradient(half, half, 0, half, half, bloomRadius);
+    grad.addColorStop(0, rgba(...hexToRGB(bloomShift1), 0.05 * chromaticIntensity));
+    grad.addColorStop(0.7, rgba(...hexToRGB(bloomShift1), 0.15 * chromaticIntensity));
+    grad.addColorStop(1, rgba(...hexToRGB(bloomShift1), 0));
+    g.fillStyle = grad;
+    g.fillRect(0, 0, size, size);
+
+    grad = g.createRadialGradient(half, half, 0, half, half, bloomRadius);
+    grad.addColorStop(0, rgba(...hexToRGB(bloomShift2), 0.05 * chromaticIntensity));
+    grad.addColorStop(0.7, rgba(...hexToRGB(bloomShift2), 0.15 * chromaticIntensity));
+    grad.addColorStop(1, rgba(...hexToRGB(bloomShift2), 0));
+    g.fillStyle = grad;
+    g.fillRect(0, 0, size, size);
   }
-  glowSpriteCache.set(hex, sprite);
-  glowSpriteCacheOrder.push(hex);
+
+  while (GLOW_SPRITE_CACHE.size >= GLOW_SPRITE_CACHE_MAX) {
+    const evict = GLOW_SPRITE_CACHE_ORDER.shift();
+    if (evict) GLOW_SPRITE_CACHE.delete(evict);
+  }
+  GLOW_SPRITE_CACHE.set(key, sprite);
+  GLOW_SPRITE_CACHE_ORDER.push(key);
   return sprite;
 }
 
@@ -1017,7 +1082,7 @@ async function loadGraph(options = {}) {
       const presetX = finiteNumber(node.x) ? node.x : null;
       const presetY = finiteNumber(node.y) ? node.y : null;
       const fallback = presetX !== null ? { x: presetX, y: presetY } : randomPosition(spread);
-      return previous
+      const nextNode = previous
         ? Object.assign(previous, {
             tag: node.tag,
             ghost: node.ghost || false,
@@ -1029,9 +1094,21 @@ async function loadGraph(options = {}) {
             vy: finiteNumber(previous.vy) ? previous.vy : 0
           })
         : { ...node, ghost: node.ghost || false, ...fallback, vx: 0, vy: 0 };
+      
+      nextNode.__depthLayer = 0; // Default layer
+      if (cfg.glowBreathing) {
+        nextNode.__breathOffset = hashStr(nextNode.id) % (Math.PI * 2 * 1000) / 1000;
+      }
+      return nextNode;
     });
     links = graph.links;
     for (let i = 0; i < nodes.length; i++) nodes[i].__index = i;
+    
+    // Assign depth layers based on importance, for depth parallax effect.
+    if (cfg.depthParallax && nodes.length > 0) {
+      assignDepthLayers();
+    }
+    
     for (let i = 0; i < particlePool.length; i++) {
       const p = particlePool[i];
       if (!p.active) continue;
@@ -1140,6 +1217,27 @@ async function loadGraph(options = {}) {
   }
 }
 
+function assignDepthLayers() {
+  if (!cfg.depthParallax || nodes.length === 0) return;
+  const layers = cfg.depthParallaxLayers || 3;
+  // Sort by importance descending, assign tiers
+  const sorted = nodes.slice().sort((a, b) => (b.importance || 0) - (a.importance || 0));
+  for (let i = 0; i < sorted.length; i++) {
+    const tier = Math.min(layers - 1, Math.floor((i / sorted.length) * layers));
+    sorted[i].__depthLayer = tier;
+  }
+}
+
+function getDepthLayerParams(layer, totalLayers, strength) {
+  const t = (layer || 1) / Math.max(1, (totalLayers || 3) - 1);
+  return {
+    driftMultiplier: 1 + (1 - t) * 0.4 * strength,
+    saturationScale: 1 - t * 0.4 * strength,
+    alphaScale: 1 - t * 0.5 * strength,
+    sizeScale: 1 - t * 0.2 * strength
+  };
+}
+
 function detectNewNodes(newIds) {
   if (prevNodeIds.size === 0) {
     prevNodeIds = newIds;
@@ -1169,19 +1267,17 @@ function getFlareIntensity(nodeId) {
   const t = age / flare.duration;
   return t < 0.15 ? t / 0.15 : 1 - ((t - 0.15) / 0.85);
 }
-
 function spawnParticles() {
-  if (!sceneTuning.particlesEnabled || links.length === 0) return;
-  const count = Math.min(
-    sceneTuning.motion.particleBurst,
-    Math.max(1, Math.floor(links.length * sceneTuning.particleDensity * 0.008))
-  );
+  if (!sceneTuning.particlesEnabled) return;
+  const desired = Math.min(sceneTuning.particleCap, Math.floor(links.length * cfg.particleDensity * 0.7));
   let spawned = 0;
-  for (let i = 0; i < particlePool.length && spawned < count; i++) {
+  // TODO: better heuristic for spawn burst rate based on `desired` and current count.
+  const burst = Math.min(sceneTuning.motion.particleBurst, desired);
+  for (let i = 0; i < particlePool.length && spawned < burst; i++) {
     const slot = particlePool[i];
     if (slot.active) continue;
     const link = links[Math.floor(Math.random() * links.length)];
-      if (!link.source.__hasPoint || !link.target.__hasPoint) continue;
+    if (!link || !link.source || !link.target) continue;
     slot.active = true;
     slot.link = link;
     slot.t = 0;
@@ -1234,6 +1330,60 @@ function drawParticles() {
       ctx.arc(arr[i], arr[i + 1], arr[i + 2], 0, Math.PI * 2);
       ctx.fill();
     }
+  }
+  ctx.globalAlpha = 1;
+}
+
+let ambientPool = [];
+function initAmbientParticles() {
+  ambientPool = [];
+  if (!cfg.ambientParticles) return;
+  for (let i = 0; i < cfg.ambientParticleCount; i++) {
+    ambientPool.push({
+      x: Math.random() * innerWidth,
+      y: Math.random() * innerHeight,
+      vx: (Math.random() - 0.5) * cfg.ambientParticleSpeed,
+      vy: (Math.random() - 0.5) * cfg.ambientParticleSpeed,
+      driftX: 0,
+      driftY: 0,
+      phase: Math.random() * Math.PI * 2,
+      size: cfg.ambientParticleSize * (0.6 + Math.random() * 0.8),
+      alpha: 0.3 + Math.random() * 0.7
+    });
+  }
+}
+
+function updateAmbientParticles() {
+  if (!cfg.ambientParticles) return;
+  const driftAmp = sceneTuning.motion.driftAmp * cfg.depthParallaxStrength * (cfg.depthParallax ? 0.3 : 1);
+  for (let i = 0; i < ambientPool.length; i++) {
+    const p = ambientPool[i];
+    p.driftX = Math.cos(tick * 0.00012 + p.phase) * driftAmp * 0.6;
+    p.driftY = Math.sin(tick * 0.00015 + p.phase) * driftAmp * 0.6;
+    p.x += p.vx * 0.6 + p.driftX;
+    p.y += p.vy * 0.6 + p.driftY;
+    p.x = (p.x + innerWidth) % innerWidth;
+    p.y = (p.y + innerHeight) % innerHeight;
+  }
+}
+
+let __ambientColor = null;
+function computeAmbientParticleColor() {
+  if (__ambientColor) return __ambientColor;
+  __ambientColor = colorTint(cfg.accent, 0.4);
+  return __ambientColor;
+}
+
+function drawAmbientParticles() {
+  if (!cfg.ambientParticles || REDUCED_MOTION) return;
+  const color = computeAmbientParticleColor();
+  ctx.fillStyle = color;
+  for (let i = 0; i < ambientPool.length; i++) {
+    const p = ambientPool[i];
+    ctx.globalAlpha = p.alpha * simAlpha;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.fill();
   }
   ctx.globalAlpha = 1;
 }
@@ -1444,15 +1594,19 @@ function drawNodes() {
         for (let i = 0; i < list.length; i++) {
           const it = list[i];
           if (it.node.ghost) continue;
-          const glowRadius = (it.radius + 4 + it.importance * 12 + it.pulse * 2 + it.flare * 20)
-            * sceneTuning.glowScale * glowIntensity;
+          const baseGlowRadius = it.radius + 3 + Math.sqrt(it.radius); // Base glow size
+          let glowRadius = baseGlowRadius * sceneTuning.glowScale * glowIntensity;
+          if (cfg.glowBreathing && !REDUCED_MOTION && simAlpha > 0.05) {
+            const breath = Math.sin(tick * 0.03 * cfg.glowBreathingSpeed + it.node.__breathOffset) * cfg.glowBreathingDepth;
+            glowRadius *= (1 + breath);
+          }
           if (glowRadius <= 0) continue;
           const glowAlpha = (0.08 + it.importance * 0.15 + it.pulse * 0.03 + it.flare * 0.4)
             * it.dofAlpha * glowIntensity;
           if (glowAlpha <= 0) continue;
           ctx.globalAlpha = Math.min(1, glowAlpha);
           const size = glowRadius * 2;
-          ctx.drawImage(sprite, it.px - glowRadius, it.py - glowRadius, size, size);
+          const sprite = getGlowSprite(color, size, cfg.chromaticBloom && !REDUCED_MOTION, cfg.chromaticBloomIntensity);
         }
       };
       render(group.low);
@@ -1593,19 +1747,53 @@ function drawLabels() {
 
     const [cr, cg, cb] = hexToRGB(nodeColor(node));
     const [br, bg, bb] = hexToRGB(cfg.background);
-    roundedRectPath(box.x, box.y, box.w, box.h, 10);
-    ctx.fillStyle = rgba(
-      mixChannel(br, cr, 0.12),
-      mixChannel(bg, cg, 0.12),
-      mixChannel(bb, cb, 0.12),
-      0.72 * dofAlpha
-    );
-    ctx.fill();
-    ctx.strokeStyle = rgba(cr, cg, cb, 0.25 * dofAlpha);
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.fillStyle = rgba(245, 247, 255, 0.88 * dofAlpha);
-    ctx.fillText(label, x, y + 0.5);
+    const mode = (cfg.labelStyle && cfg.labelStyle.mode) || 'badge';
+    const textColor = (br + bg + bb) / 3 > 128 ? 'rgba(30,30,35,0.85)' : 'rgba(245,247,255,0.88)';
+
+    if (mode === 'badge') {
+      // Current behavior: dark rounded-rect badge
+      roundedRectPath(box.x, box.y, box.w, box.h, 10);
+      ctx.fillStyle = rgba(
+        mixChannel(br, cr, 0.12),
+        mixChannel(bg, cg, 0.12),
+        mixChannel(bb, cb, 0.12),
+        0.72 * dofAlpha
+      );
+      ctx.fill();
+      ctx.strokeStyle = rgba(cr, cg, cb, 0.25 * dofAlpha);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = textColor;
+      ctx.fillText(label, x, y + 0.5);
+    } else if (mode === 'glow') {
+      // Glowing text, no background
+      const glowColor = (cfg.labelStyle.glowColor === 'node') ? nodeColor(node) : cfg.accent;
+      ctx.shadowColor = glowColor;
+      ctx.shadowBlur = 6;
+      if (cfg.labelStyle && cfg.labelStyle.chromaticSplit) {
+        // Synthwave/Vapor: pink + cyan offset
+        ctx.fillStyle = 'rgba(255,100,200,0.7)';
+        ctx.fillText(label, x - 1, y + 0.5);
+        ctx.fillStyle = 'rgba(100,255,255,0.7)';
+        ctx.fillText(label, x + 1, y + 0.5);
+      }
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
+      ctx.fillText(label, x, y + 0.5);
+      ctx.shadowBlur = 0;
+      ctx.shadowColor = 'transparent';
+    } else if (mode === 'inherit') {
+      // Tinted background using node's tag color
+      roundedRectPath(box.x, box.y, box.w, box.h, 10);
+      ctx.fillStyle = rgba(cr, cg, cb, 0.22 * dofAlpha);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.88)';
+      ctx.fillText(label, x, y + 0.5);
+    } else {
+      // Minimal: plain text, no background, no stroke
+      ctx.fillStyle = textColor;
+      ctx.fillText(label, x, y + 0.5);
+    }
+
     placed.push(box);
     drawn += 1;
   }
@@ -1619,6 +1807,12 @@ if (PERF_ENABLED) {
 }
 
 function draw() {
+  // Theme dispatch: non-default themes handle their own full draw pipeline
+  if (cfg.theme && cfg.theme !== 'default' && window.THEMES && window.THEMES[cfg.theme] && window.THEMES[cfg.theme].draw) {
+    window.THEMES[cfg.theme].draw();
+    return;
+  }
+
   buildFramePoints();
   maybeRebuildQuadtree();
   markVisibleNodes();

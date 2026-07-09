@@ -38,7 +38,20 @@ const DEFAULTS = {
   lightBackground: '#ece6d6',
   maxRenderedNodes: 5000,
   ignorePaths: [],
-  tagColors: {}
+  tagColors: {},
+  glowBreathing: true,
+  glowBreathingSpeed: 1,
+  glowBreathingDepth: 0.15,
+  ambientParticles: true,
+  ambientParticleCount: 80,
+  ambientParticleSpeed: 0.3,
+  ambientParticleSize: 1.5,
+  chromaticBloom: true,
+  chromaticBloomIntensity: 0.4,
+  depthParallax: true,
+  depthParallaxStrength: 0.5,
+  depthParallaxLayers: 3,
+  theme: 'default'
 };
 const PUBLIC_FILES = new Map([
   ['/', path.join(__dirname, 'index.html')],
@@ -56,6 +69,8 @@ const MOTION_MODES = new Set(['still', 'light', 'balanced', 'showcase']);
 const EDGE_STYLES = new Set(['line', 'curve', 'none']);
 const NODE_COLOR_MODES = new Set(['tag', 'age', 'folder']);
 const LABEL_FONTS = new Set(['sans', 'mono', 'serif']);
+const THEME_NAMES = new Set(['default', 'celestial', 'wash', 'sketch', 'stained-glass']);
+const LABEL_STYLE_MODES = new Set(['badge', 'glow', 'minimal', 'inherit']);
 const WIKILINK = /\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g;
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---/;
 const TAGS_FLOW = /^tags:\s*\[([^\]]*)\]/m;
@@ -160,6 +175,26 @@ function validateIgnorePaths(value, key) {
   return value.slice();
 }
 
+function validateLabelStyle(value) {
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value)) throw new Error('labelStyle must be an object');
+  const s = {};
+  if (value.mode !== undefined) {
+    if (typeof value.mode !== 'string' || !LABEL_STYLE_MODES.has(value.mode))
+      throw new Error(`labelStyle.mode must be one of: ${Array.from(LABEL_STYLE_MODES).join(', ')}`);
+    s.mode = value.mode;
+  }
+  if (value.backgroundAlpha !== undefined) s.backgroundAlpha = validateNumber(value.backgroundAlpha, 'labelStyle.backgroundAlpha', 0, 0.9);
+  if (value.glowColor !== undefined) {
+    if (typeof value.glowColor !== 'string' || (value.glowColor !== 'accent' && value.glowColor !== 'node' && !HEX_COLOR.test(value.glowColor)))
+      throw new Error('labelStyle.glowColor must be "accent", "node", or a hex color');
+    s.glowColor = value.glowColor;
+  }
+  if (value.chromaticSplit !== undefined) s.chromaticSplit = validateBoolean(value.chromaticSplit, 'labelStyle.chromaticSplit');
+  if (value.fontStyle !== undefined) s.fontStyle = validateEnum(value.fontStyle, 'labelStyle.fontStyle', LABEL_FONTS);
+  return s;
+}
+
 function isIgnoredPath(filePath, vaultPath, patterns) {
   if (!patterns || patterns.length === 0) return false;
   const rel = path.relative(vaultPath, filePath);
@@ -203,9 +238,23 @@ const VALIDATORS = {
   autoTheme:          { fn: validateBoolean },
   lightAccent:        { fn: validateHexColor },
   lightBackground:    { fn: validateHexColor },
-  maxRenderedNodes:   { fn: validateInteger,  args: [100, 100000] },
-  ignorePaths:        { fn: validateIgnorePaths },
-  tagColors:          { fn: sanitizeTagColors }
+  maxRenderedNodes:       { fn: validateInteger,  args: [100, 100000] },
+  ignorePaths:            { fn: validateIgnorePaths },
+  tagColors:              { fn: sanitizeTagColors },
+  glowBreathing:          { fn: validateBoolean },
+  glowBreathingSpeed:     { fn: validateNumber,   args: [0.1, 3] },
+  glowBreathingDepth:     { fn: validateNumber,   args: [0, 0.4] },
+  ambientParticles:       { fn: validateBoolean },
+  ambientParticleCount:   { fn: validateInteger,  args: [0, 300] },
+  ambientParticleSpeed:   { fn: validateNumber,   args: [0.05, 2] },
+  ambientParticleSize:    { fn: validateNumber,   args: [0.5, 4] },
+  chromaticBloom:         { fn: validateBoolean },
+  chromaticBloomIntensity:{ fn: validateNumber,   args: [0, 1] },
+  depthParallax:          { fn: validateBoolean },
+  depthParallaxStrength:  { fn: validateNumber,   args: [0, 1] },
+  depthParallaxLayers:    { fn: validateInteger,  args: [2, 4] },
+  theme:                  { fn: validateEnum,     args: [THEME_NAMES] },
+  labelStyle:             { fn: validateLabelStyle }
 };
 
 function sanitizePersistedConfig(raw) {
@@ -782,6 +831,21 @@ function createRequestHandler(state) {
         fs.statSync(abs).isFile()
       ) {
         serveFile(res, abs);
+        return;
+      }
+    }
+
+    // /themes/* — serve theme JS files from the themes/ directory
+    if (url.startsWith('/themes/')) {
+      const rel = url.slice('/themes/'.length);
+      if (!rel || rel.includes('/') || rel.includes('\\')) {
+        res.writeHead(404, defaultHeaders('text/plain', DYNAMIC_CACHE_CONTROL));
+        res.end('Not found');
+        return;
+      }
+      const abs = path.join(__dirname, 'themes', rel);
+      if (fs.existsSync(abs) && fs.statSync(abs).isFile()) {
+        serveFile(res, abs, APP_ASSET_CACHE_CONTROL);
         return;
       }
     }

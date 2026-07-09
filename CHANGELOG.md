@@ -1,8 +1,26 @@
 # Changelog
 
-All notable changes to this project are documented here. The format is based on
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
-to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [1.1.0] - 2026-07-09
+
+### Added
+- **Glow breathing.** Nodes slowly pulse over ~30s cycles (`glowBreathing`, `glowBreathingSpeed`, `glowBreathingDepth`). Keeps the wallpaper feeling alive during long desktop sessions with zero performance cost.
+- **Ambient environmental particles.** A separate particle system of free-floating motes (`ambientParticles`, `ambientParticleCount`, `ambientParticleSpeed`, `ambientParticleSize`) that drift independently of the graph structure. Adds atmospheric depth — like dust motes, fireflies, or slowly falling snow depending on the preset.
+- **Chromatic light bleed (bloom).** Bright nodes bloom into hue-shifted outer halos (`chromaticBloom`, `chromaticBloomIntensity`) for a cinematic, photographic feel. Two-layer radial gradient: inner at base color, outer at +15° hue shift.
+- **Depth parallax layers.** Nodes rendered in 2–4 depth tiers (`depthParallax`, `depthParallaxStrength`, `depthParallaxLayers`) with independent drift motion, saturation, alpha, size, and blur. Creates genuine 3D depth without WebGL — foreground nodes drift faster, background nodes are desaturated and slightly blurred.
+- **Label visual integration.** Per-preset label styling via `labelStyle` object with four modes: `badge` (current dark rounded-rect), `glow` (shadow-blur text in node color), `minimal` (plain text, serif where appropriate), `inherit` (tinted to node's tag color). Plus `chromaticSplit` for Synthwave/Vapor pink+cyan offset labels. `fontStyle` per-preset overrides the global `labelFont`.
+- **Four rendering themes** (`theme` config): `celestial` (star chart with diffraction spikes, orbital rings, rotating starfield, nebula washes), `wash` (watercolor pigment bleed, brush-stroke edges, paper texture), `sketch` (hand-drawn jittered arcs, notebook paper with ruled lines and red margin, graphite smudges), `stained-glass` (experimental — Voronoi-tessellated cells colored by tag with dark lead borders). Theme system is modular: each theme lives in its own JS file under `themes/`, registered via `themes/registry.js`, dispatched from `index.html`'s `draw()`.
+- **Theme file serving.** Parser now serves `/themes/*` paths from the `themes/` directory with app cache TTL.
+- **Config validation.** Full validation for all 14 new config options in `parser.js`, plus `validateLabelStyle()` for the nested label style object. `THEME_NAMES` and `LABEL_STYLE_MODES` enums.
+- All 18 presets updated with per-preset defaults for every new option. Synthwave/Vapor ship with chromatic bloom + chromatic-split labels. Constellation ships with 4-layer depth parallax. Abyss ships with 100 ambient particles. Ink/Library/Parchment ship with minimal serif labels.
+
+### Fixed
+- **Missing `updateParticles` function.** Was accidentally dropped during the enhancement refactor; restored. Particles now animate correctly in all presets.
+- **Glow sprite defaults.** `getGlowSprite()` now handles undefined `size`/`chromatic`/`chromaticIntensity` arguments, preventing non-finite radial gradient errors on call sites that pass only a color.
+- **Chromatic bloom color shift.** Added `rgbToHsl()` helper to `index.html` so `hueShift()` works correctly for generating bloom-tinted outer glow colors.
+
+### Changed
+- `labelFontStack()` now respects `cfg.labelStyle.fontStyle` override before falling back to `cfg.labelFont`.
+- `draw()` function delegates to theme renderers when `cfg.theme` is set to a non-default value and `window.THEMES[cfg.theme].draw` exists.
 
 ## [1.0.0] - 2026-06-19
 

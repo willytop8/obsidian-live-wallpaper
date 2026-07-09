@@ -30,6 +30,23 @@
   "lightAccent": "#39407a",
   "lightBackground": "#ece6d6",
   "maxRenderedNodes": 5000,
-  "ignorePaths": [".obsidian", "templates", "_archive"],
-  "tagColors": {}
+  "ignorePaths": [
+    ".obsidian",
+    "templates",
+    "_archive"
+  ],
+  "tagColors": {},
+  "glowBreathing": true,
+  "glowBreathingSpeed": 1.0,
+  "glowBreathingDepth": 0.15,
+  "ambientParticles": true,
+  "ambientParticleCount": 80,
+  "ambientParticleSpeed": 0.3,
+  "ambientParticleSize": 1.5,
+  "chromaticBloom": true,
+  "chromaticBloomIntensity": 0.4,
+  "depthParallax": true,
+  "depthParallaxStrength": 0.5,
+  "depthParallaxLayers": 3,
+  "theme": "default"
 }
